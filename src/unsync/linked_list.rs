@@ -30,6 +30,11 @@ impl<T> Eq for Node<T> where T: Eq {}
 // This is just because I am tired of typing Link<T>
 type Link<T> = Option<NonNull<Node<T>>>;
 
+/// Creates a new Link from a value (not wrapped in an Option)
+fn new_link<T>(value: T) -> NonNull<Node<T>> {
+    unsafe { NonNull::new_unchecked(Box::into_raw(Box::new(Node::new(value)))) }
+}
+
 /// A singly non-concurrent `LinkedList`.
 pub struct LinkedList<T> {
     head: Link<T>,
@@ -46,8 +51,7 @@ impl<T> LinkedList<T> {
     /// Time complexity: *O*(*1*).
     pub fn push_front(&mut self, element: T) {
         // create node
-        let mut node =
-            unsafe { NonNull::new_unchecked(Box::into_raw(Box::new(Node::new(element)))) };
+        let mut node = new_link(element);
 
         // replacing the head and getting the old one with the new value
         let old_head = self.head.replace(node);
@@ -184,6 +188,32 @@ impl<T> Default for LinkedList<T> {
     }
 }
 
+impl<T> Clone for LinkedList<T>
+where
+    T: Clone,
+{
+    fn clone(&self) -> Self {
+        let head = match self.head {
+            Some(head) => head,
+            None => return Self::default(),
+        };
+
+        let head = new_link(unsafe { head.as_ref() }.value.clone());
+        let mut current = head;
+
+        for val in self.iter().skip(1) {
+            let link = new_link(val.clone());
+            unsafe { current.as_mut() }.next = Some(link);
+            current = link;
+        }
+
+        Self {
+            len: self.len(),
+            head: Some(head),
+        }
+    }
+}
+
 impl<T> PartialEq for LinkedList<T>
 where
     T: PartialEq,
@@ -212,13 +242,28 @@ where
 
 impl<K> FromIterator<K> for LinkedList<K> {
     fn from_iter<T: IntoIterator<Item = K>>(iter: T) -> Self {
-        let mut list = Self::default();
+        let mut iter = iter.into_iter();
+        let val = match iter.next() {
+            Some(val) => val,
+            None => return Self::default(),
+        };
 
-        for item in iter {
-            list.push_front(item);
+        let head = new_link(val);
+        let mut current = head;
+
+        let mut len = 1;
+        for val in iter {
+            let link = new_link(val);
+            unsafe { current.as_mut() }.next = Some(link);
+            current = link;
+
+            len += 1;
         }
 
-        list
+        Self {
+            len: len,
+            head: Some(head),
+        }
     }
 }
 
@@ -333,5 +378,67 @@ impl<T> IntoIterator for LinkedList<T> {
 
     fn into_iter(self) -> Self::IntoIter {
         Self::IntoIter { list: self }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_list() -> LinkedList<i32> {
+        LinkedList::from([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+    }
+
+    #[test]
+    fn push_and_iterate() {
+        let mut list = create_list();
+
+        assert!([1, 2, 3, 4, 5, 6, 7, 8, 9, 10].iter().eq(&list));
+
+        list.push_front(17);
+        list.push_front(20);
+
+        assert!([20i32, 17, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].iter().eq(&list));
+
+        let mut i = 0;
+        let vals = [20i32, 17, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        while let Some(val) = list.pop_front() {
+            assert_eq!(val, vals[i]);
+            i += 1;
+        }
+
+        let mut list = create_list();
+        let mut list: LinkedList<_> = list.iter_mut().map(|val| *val + 1).collect();
+
+        assert!([2i32, 3, 4, 5, 6, 7, 8, 9, 10, 11].iter().eq(&list));
+
+        list.clear();
+
+        assert_eq!(0, list.len());
+    }
+
+    #[test]
+    fn split() {
+        let mut l1 = create_list();
+        let copy = l1.clone();
+        let mut l2 = l1.split_off(0);
+
+        assert_eq!(l1, LinkedList::default());
+        assert_eq!(l2, copy);
+
+        let mut l3 = l2.split_off(5);
+
+        assert!([1i32, 2, 3, 4, 5].iter().eq(&l2));
+        assert!([6i32, 7, 8, 9, 10].iter().eq(&l3));
+
+        let l4 = l3.split_off(1);
+
+        assert!([6i32].iter().eq(&l3));
+        assert!([7i32, 8, 9, 10].iter().eq(&l4));
+
+        l3.push_front(100);
+        assert!([100i32, 6].iter().eq(&l3));
+
+        assert!(l4.contains(&9))
     }
 }
