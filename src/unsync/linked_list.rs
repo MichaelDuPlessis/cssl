@@ -81,13 +81,13 @@ impl<T> LinkedList<T> {
     }
 
     /// Returns a reference to the head of the `LinkedList` or None if it does not exist.
-    /// Time complexity: *O*(*n*).
+    /// Time complexity: *O*(*1*).
     pub fn front(&self) -> Option<&T> {
         self.head.map(|node| unsafe { &node.as_ref().value })
     }
 
     /// Returns a mutable reference to the head of the `LinkedList` or None if it does not exist.
-    /// Time complexity: *O*(*n*).
+    /// Time complexity: *O*(*1*).
     pub fn front_mut(&mut self) -> Option<&mut T> {
         self.head
             .map(|mut node| unsafe { &mut node.as_mut().value })
