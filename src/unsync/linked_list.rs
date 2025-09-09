@@ -3,7 +3,47 @@
 use std::{marker::PhantomData, ptr::NonNull};
 
 // This is just because I am tired of typing Link<T>
-type Link<T> = NonNull<Node<T>>;
+// type Link<T> = NonNull<Node<T>>;
+
+#[repr(transparent)]
+#[derive(Debug)]
+pub struct Link<T> {
+    node: NonNull<Node<T>>,
+}
+
+impl<T> Link<T> {
+    pub fn new(val: T) -> Self {
+        Self {
+            node: unsafe { NonNull::new_unchecked(Box::into_raw(Box::new(Node::new(val)))) },
+        }
+    }
+
+    pub fn node(&self) -> &Node<T> {
+        unsafe { self.node.as_ref() }
+    }
+
+    pub fn node_mut(&mut self) -> &mut Node<T> {
+        unsafe { self.node.as_mut() }
+    }
+}
+
+impl<T> Clone for Link<T> {
+    fn clone(&self) -> Self {
+        Self {
+            node: NonNull::clone(&self.node),
+        }
+    }
+}
+
+impl<T> Copy for Link<T> {}
+
+impl<T> From<Node<T>> for Link<T> {
+    fn from(value: Node<T>) -> Self {
+        Self {
+            node: unsafe { NonNull::new_unchecked(Box::into_raw(Box::new(value))) },
+        }
+    }
+}
 
 /// A `Node` in a `LinkedList`.
 #[derive(Debug)]
@@ -20,25 +60,26 @@ impl<T> Node<T> {
 
     /// Append a `Node` after this node.
     pub fn append(&mut self, value: T) {
-        let mut node = Node::new(value);
-        node.next = self.next;
+        let mut link = Link::new(value);
+        link.node_mut().next = self.next;
 
-        self.next = Some(node.into_link());
+        self.next = Some(link);
     }
 
     /// Get a immutable reference to the next node if it exists.
     pub fn next(&self) -> Option<&Self> {
-        self.next.map(|node| unsafe { node.as_ref() })
+        self.next.as_ref().map(|link| link.node())
     }
 
     /// Get a mutable reference to the next node if it exists.
     pub fn next_mut(&mut self) -> Option<&mut Self> {
-        self.next.map(|mut node| unsafe { node.as_mut() })
+        self.next.as_mut().map(|link| link.node_mut())
     }
+}
 
-    /// Turn this `Node` into a `Link`.
-    pub fn into_link(self) -> Link<T> {
-        unsafe { NonNull::new_unchecked(Box::into_raw(Box::new(self))) }
+impl<T> From<Link<T>> for Node<T> {
+    fn from(value: Link<T>) -> Self {
+        *unsafe { Box::from_raw(value.node.as_ptr()) }
     }
 }
 
@@ -87,10 +128,9 @@ impl<T> LinkedList<T> {
     /// Time complexity: *O*(*1*).
     pub fn push_front(&mut self, element: T) {
         // create node
-        let mut node = Node::new(element);
-        node.next = self.head;
+        let mut link = Link::new(element);
+        link.node_mut().next = self.head;
 
-        let link = node.into_link();
         // replacing the head and getting the old one with the new value
         self.head = Some(link);
     }
@@ -102,7 +142,7 @@ impl<T> LinkedList<T> {
         let head = self.head?;
 
         // destructuring the head
-        let Node { value, next } = *unsafe { Box::from_raw(head.as_ptr()) };
+        let Node { value, next } = head.into();
 
         // updating the head
         self.head = next;
@@ -113,14 +153,13 @@ impl<T> LinkedList<T> {
     /// Returns a reference to the head of the `LinkedList` or None if it does not exist.
     /// Time complexity: *O*(*1*).
     pub fn front(&self) -> Option<&T> {
-        self.head.map(|node| unsafe { &node.as_ref().value })
+        self.head.as_ref().map(|link| &link.node().value)
     }
 
     /// Returns a mutable reference to the head of the `LinkedList` or None if it does not exist.
     /// Time complexity: *O*(*1*).
     pub fn front_mut(&mut self) -> Option<&mut T> {
-        self.head
-            .map(|mut node| unsafe { &mut node.as_mut().value })
+        self.head.as_mut().map(|link| &mut link.node_mut().value)
     }
 
     /// Splits the `LinkedList` into two seperate linked list at the specified index. The latter half of the `LinkedList` is returned from the index specified.
@@ -141,11 +180,11 @@ impl<T> LinkedList<T> {
         for _ in 0..index {
             // We checked the length is valid so we can do this
             previous = current;
-            current = unsafe { current.unwrap_unchecked().as_ref() }.next;
+            current = unsafe { current.unwrap_unchecked() }.node().next;
         }
 
         // seperating the left list from the right
-        unsafe { previous.unwrap_unchecked().as_mut() }.next = None;
+        unsafe { previous.unwrap_unchecked() }.node_mut().next = None;
 
         Self { head: current }
     }
@@ -205,17 +244,17 @@ where
     T: Clone,
 {
     fn clone(&self) -> Self {
-        let head = match self.head {
+        let head = match &self.head {
             Some(head) => head,
             None => return Self::default(),
         };
 
-        let head = Node::new(unsafe { head.as_ref() }.value.clone()).into_link();
+        let head = Link::new(head.node().value.clone());
         let mut current = head;
 
         for val in self.iter().skip(1) {
-            let link = Node::new(val.clone()).into_link();
-            unsafe { current.as_mut() }.next = Some(link);
+            let link = Link::new(val.clone());
+            current.node_mut().next = Some(link);
             current = link;
         }
 
@@ -257,12 +296,12 @@ impl<K> FromIterator<K> for LinkedList<K> {
             None => return Self::default(),
         };
 
-        let head = Node::new(val).into_link();
+        let head = Link::new(val);
         let mut current = head;
 
         for val in iter {
-            let link = Node::new(val).into_link();
-            unsafe { current.as_mut() }.next = Some(link);
+            let link = Link::new(val);
+            current.node_mut().next = Some(link);
             current = link;
         }
 
@@ -287,14 +326,10 @@ impl<'a, T> Iterator for Iter<'a, T> {
     type Item = &'a T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.current.is_none() {
-            return None;
-        }
+        let link = self.current?; // copy out the link (Link<T> is Copy)
+        let node: &'a Node<T> = unsafe { &*link.node.as_ptr() };
 
-        // unsafe code for the win
-        let node = unsafe { self.current.unwrap_unchecked().as_ref() };
-
-        // simply advance forward
+        // Advance the iterator
         self.current = node.next;
 
         Some(&node.value)
@@ -321,13 +356,10 @@ impl<'a, T> Iterator for IterMut<'a, T> {
     type Item = &'a mut T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.current.is_none() {
-            return None;
-        }
-        // unsafe code for the win
-        let node = unsafe { self.current.unwrap_unchecked().as_mut() };
+        let link = self.current?; // copy out the link (Link<T> is Copy)
+        let node: &'a mut Node<T> = unsafe { &mut *link.node.as_ptr() };
 
-        // simply advance forward
+        // Advance the iterator
         self.current = node.next;
 
         Some(&mut node.value)
