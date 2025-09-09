@@ -2,11 +2,14 @@
 
 use std::{marker::PhantomData, ptr::NonNull};
 
+// This is just because I am tired of typing Link<T>
+type Link<T> = NonNull<Node<T>>;
+
 /// A `Node` in a `LinkedList`.
 #[derive(Debug)]
 pub struct Node<T> {
     value: T,
-    next: Link<T>,
+    next: Option<Link<T>>,
 }
 
 impl<T> Node<T> {
@@ -17,10 +20,25 @@ impl<T> Node<T> {
 
     /// Append a `Node` after this node.
     pub fn append(&mut self, value: T) {
-        let mut link = new_link(value);
-        unsafe { link.as_mut() }.next = self.next;
+        let mut node = Node::new(value);
+        node.next = self.next;
 
-        self.next = Some(link);
+        self.next = Some(node.into_link());
+    }
+
+    /// Get a immutable reference to the next node if it exists.
+    pub fn next(&self) -> Option<&Self> {
+        self.next.map(|node| unsafe { node.as_ref() })
+    }
+
+    /// Get a mutable reference to the next node if it exists.
+    pub fn next_mut(&mut self) -> Option<&mut Self> {
+        self.next.map(|mut node| unsafe { node.as_mut() })
+    }
+
+    /// Turn this `Node` into a `Link`.
+    pub fn into_link(self) -> Link<T> {
+        unsafe { NonNull::new_unchecked(Box::into_raw(Box::new(self))) }
     }
 }
 
@@ -53,17 +71,9 @@ where
     }
 }
 
-// This is just because I am tired of typing Link<T>
-type Link<T> = Option<NonNull<Node<T>>>;
-
-/// Creates a new Link from a value (not wrapped in an Option)
-fn new_link<T>(value: T) -> NonNull<Node<T>> {
-    unsafe { NonNull::new_unchecked(Box::into_raw(Box::new(Node::new(value)))) }
-}
-
 /// A singly non-concurrent `LinkedList`.
 pub struct LinkedList<T> {
-    head: Link<T>,
+    head: Option<Link<T>>,
 }
 
 impl<T> LinkedList<T> {
@@ -73,15 +83,16 @@ impl<T> LinkedList<T> {
     }
 
     /// Adds an element to the front of the `LinkedList` making it the new head and increasing its length.
+    /// Returns a reference to the newly inserted node.
     /// Time complexity: *O*(*1*).
     pub fn push_front(&mut self, element: T) {
         // create node
-        let mut node = new_link(element);
+        let mut node = Node::new(element);
+        node.next = self.head;
 
+        let link = node.into_link();
         // replacing the head and getting the old one with the new value
-        let old_head = self.head.replace(node);
-        // all this is save, we literally control all the memory
-        unsafe { node.as_mut().next = old_head };
+        self.head = Some(link);
     }
 
     /// Removes and returns the head element from the `LinkedList` and decreases its length.
@@ -199,11 +210,11 @@ where
             None => return Self::default(),
         };
 
-        let head = new_link(unsafe { head.as_ref() }.value.clone());
+        let head = Node::new(unsafe { head.as_ref() }.value.clone()).into_link();
         let mut current = head;
 
         for val in self.iter().skip(1) {
-            let link = new_link(val.clone());
+            let link = Node::new(val.clone()).into_link();
             unsafe { current.as_mut() }.next = Some(link);
             current = link;
         }
@@ -246,11 +257,11 @@ impl<K> FromIterator<K> for LinkedList<K> {
             None => return Self::default(),
         };
 
-        let head = new_link(val);
+        let head = Node::new(val).into_link();
         let mut current = head;
 
         for val in iter {
-            let link = new_link(val);
+            let link = Node::new(val).into_link();
             unsafe { current.as_mut() }.next = Some(link);
             current = link;
         }
@@ -268,7 +279,7 @@ impl<T> Drop for LinkedList<T> {
 
 /// Immutabale iterator for `LinkedList`.
 pub struct Iter<'a, T: 'a> {
-    current: Link<T>,
+    current: Option<Link<T>>,
     _marker: PhantomData<&'a Link<T>>,
 }
 
@@ -302,7 +313,7 @@ impl<'a, T> IntoIterator for &'a LinkedList<T> {
 
 /// Mutable iterator for `LinkedList`.
 pub struct IterMut<'a, T: 'a> {
-    current: Link<T>,
+    current: Option<Link<T>>,
     _marker: PhantomData<&'a mut Link<T>>,
 }
 
