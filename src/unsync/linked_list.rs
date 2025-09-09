@@ -14,6 +14,14 @@ impl<T> Node<T> {
     pub fn new(value: T) -> Self {
         Self { value, next: None }
     }
+
+    /// Append a `Node` after this node.
+    pub fn append(&mut self, value: T) {
+        let mut link = new_link(value);
+        unsafe { link.as_mut() }.next = self.next;
+
+        self.next = Some(link);
+    }
 }
 
 impl<T> PartialEq for Node<T>
@@ -27,6 +35,24 @@ where
 
 impl<T> Eq for Node<T> where T: Eq {}
 
+impl<T> PartialOrd for Node<T>
+where
+    T: PartialOrd,
+{
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.value.partial_cmp(&other.value)
+    }
+}
+
+impl<T> Ord for Node<T>
+where
+    T: Ord,
+{
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.value.cmp(&other.value)
+    }
+}
+
 // This is just because I am tired of typing Link<T>
 type Link<T> = Option<NonNull<Node<T>>>;
 
@@ -38,13 +64,12 @@ fn new_link<T>(value: T) -> NonNull<Node<T>> {
 /// A singly non-concurrent `LinkedList`.
 pub struct LinkedList<T> {
     head: Link<T>,
-    len: usize,
 }
 
 impl<T> LinkedList<T> {
     /// Create a new empty `LinkedList`.
     pub fn new() -> Self {
-        Self { head: None, len: 0 }
+        Self { head: None }
     }
 
     /// Adds an element to the front of the `LinkedList` making it the new head and increasing its length.
@@ -57,12 +82,9 @@ impl<T> LinkedList<T> {
         let old_head = self.head.replace(node);
         // all this is save, we literally control all the memory
         unsafe { node.as_mut().next = old_head };
-
-        // incrementing the length
-        self.len += 1;
     }
 
-    /// Removes and returns the head element from the `LinkedList` and decreases the length.
+    /// Removes and returns the head element from the `LinkedList` and decreases its length.
     /// Time complexity: *O*(*1*).
     pub fn pop_front(&mut self) -> Option<T> {
         // checking if there is a head
@@ -73,9 +95,6 @@ impl<T> LinkedList<T> {
 
         // updating the head
         self.head = next;
-
-        // A subtracting won't occur if the len is 0 since the head is None which cannot happen
-        self.len = unsafe { self.len.unchecked_sub(1) };
 
         Some(value)
     }
@@ -97,22 +116,12 @@ impl<T> LinkedList<T> {
     /// Time complexity: *O*(*n*).
     /// Panics: index > len
     pub fn split_off(&mut self, index: usize) -> Self {
-        assert!(
-            index <= self.len,
-            "Cannot split at index larger than the list's length"
-        );
-
         // if at beginning just empty current list
         if index == 0 {
             let mut right = Self::default();
             std::mem::swap(self, &mut right);
 
             return right;
-        }
-
-        // if at the end just return an empty list
-        if index == self.len {
-            return Self::default();
         }
 
         let mut previous = self.head;
@@ -124,17 +133,10 @@ impl<T> LinkedList<T> {
             current = unsafe { current.unwrap_unchecked().as_ref() }.next;
         }
 
-        // len for the returned list
-        let len = unsafe { self.len.unchecked_sub(index) };
-
         // seperating the left list from the right
         unsafe { previous.unwrap_unchecked().as_mut() }.next = None;
-        self.len = unsafe { self.len.unchecked_sub(len) };
 
-        Self {
-            head: current,
-            len: len,
-        }
+        Self { head: current }
     }
 
     /// Removes all elements of the `LinkedList`
@@ -154,20 +156,20 @@ impl<T> LinkedList<T> {
     }
 
     /// Returns the length of the `LinkedList`.
+    /// Time complexity: *O*(*n*).
     pub fn len(&self) -> usize {
-        self.len
+        self.iter().count()
     }
 
     /// Returns true if the `LinkedList` is empty.
     pub fn is_empty(&self) -> bool {
-        self.len == 0
+        self.head.is_none()
     }
 
     /// Create an iterator over immutable references
     pub fn iter(&self) -> Iter<'_, T> {
         Iter {
             current: self.head,
-            len: self.len(),
             _marker: PhantomData,
         }
     }
@@ -176,7 +178,6 @@ impl<T> LinkedList<T> {
     pub fn iter_mut(&mut self) -> IterMut<'_, T> {
         IterMut {
             current: self.head,
-            len: self.len(),
             _marker: PhantomData,
         }
     }
@@ -207,10 +208,7 @@ where
             current = link;
         }
 
-        Self {
-            len: self.len(),
-            head: Some(head),
-        }
+        Self { head: Some(head) }
     }
 }
 
@@ -251,19 +249,13 @@ impl<K> FromIterator<K> for LinkedList<K> {
         let head = new_link(val);
         let mut current = head;
 
-        let mut len = 1;
         for val in iter {
             let link = new_link(val);
             unsafe { current.as_mut() }.next = Some(link);
             current = link;
-
-            len += 1;
         }
 
-        Self {
-            len: len,
-            head: Some(head),
-        }
+        Self { head: Some(head) }
     }
 }
 
@@ -277,8 +269,6 @@ impl<T> Drop for LinkedList<T> {
 /// Immutabale iterator for `LinkedList`.
 pub struct Iter<'a, T: 'a> {
     current: Link<T>,
-    // technically the len isn't needed but if we have it we can provide a size_hint implementation
-    len: usize,
     _marker: PhantomData<&'a Link<T>>,
 }
 
@@ -286,23 +276,17 @@ impl<'a, T> Iterator for Iter<'a, T> {
     type Item = &'a T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.len == 0 {
-            None
-        } else {
-            // unsafe code for the win
-            let node = unsafe { self.current.unwrap_unchecked().as_ref() };
-            // again this should be safe unless intrinsics get violated
-            self.len = unsafe { self.len.unchecked_sub(1) };
-
-            // simply advance forward
-            self.current = node.next;
-
-            Some(&node.value)
+        if self.current.is_none() {
+            return None;
         }
-    }
 
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.len, Some(self.len))
+        // unsafe code for the win
+        let node = unsafe { self.current.unwrap_unchecked().as_ref() };
+
+        // simply advance forward
+        self.current = node.next;
+
+        Some(&node.value)
     }
 }
 
@@ -319,8 +303,6 @@ impl<'a, T> IntoIterator for &'a LinkedList<T> {
 /// Mutable iterator for `LinkedList`.
 pub struct IterMut<'a, T: 'a> {
     current: Link<T>,
-    // technically the len isn't needed but if we have it we can provide a size_hint implementation
-    len: usize,
     _marker: PhantomData<&'a mut Link<T>>,
 }
 
@@ -328,23 +310,16 @@ impl<'a, T> Iterator for IterMut<'a, T> {
     type Item = &'a mut T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.len == 0 {
-            None
-        } else {
-            // unsafe code for the win
-            let node = unsafe { self.current.unwrap_unchecked().as_mut() };
-            // again this should be safe unless intrinsics get violated
-            self.len = unsafe { self.len.unchecked_sub(1) };
-
-            // simply advance forward
-            self.current = node.next;
-
-            Some(&mut node.value)
+        if self.current.is_none() {
+            return None;
         }
-    }
+        // unsafe code for the win
+        let node = unsafe { self.current.unwrap_unchecked().as_mut() };
 
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.len, Some(self.len))
+        // simply advance forward
+        self.current = node.next;
+
+        Some(&mut node.value)
     }
 }
 
