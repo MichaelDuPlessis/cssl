@@ -2,9 +2,7 @@
 
 use std::{marker::PhantomData, ptr::NonNull};
 
-// This is just because I am tired of typing Link<T>
-// type Link<T> = NonNull<Node<T>>;
-
+/// A `Link` to a `Node` in the `LinkedList`.
 #[repr(transparent)]
 #[derive(Debug)]
 pub struct Link<T> {
@@ -12,16 +10,17 @@ pub struct Link<T> {
 }
 
 impl<T> Link<T> {
+    /// Create a new Link from a value.
     pub fn new(val: T) -> Self {
-        Self {
-            node: unsafe { NonNull::new_unchecked(Box::into_raw(Box::new(Node::new(val)))) },
-        }
+        Node::new(val).into()
     }
 
+    /// Get a reference to the `Node` the `Link` points to.
     pub fn node(&self) -> &Node<T> {
         unsafe { self.node.as_ref() }
     }
 
+    /// Get a mutable reference to the `Node` the `Link` points to.
     pub fn node_mut(&mut self) -> &mut Node<T> {
         unsafe { self.node.as_mut() }
     }
