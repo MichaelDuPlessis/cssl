@@ -10,46 +10,51 @@ const P: usize = 4;
 /// The number of fastlane levels in the `SkipList`.
 const LEVELS: usize = 2;
 
+/// An Item that is stored in the `SkipListMap`
+#[derive(Debug)]
+struct Item<K, V> {
+    key: K,
+    value: V,
+}
+
 /// Used as a Proxy between the fast lanes and the linked list
 #[derive(Debug)]
-struct Proxy<T> {
+struct Proxy<K, V> {
     // The values that map to links
-    values: [T; PROXY_SIZE],
+    values: [K; PROXY_SIZE],
     // The links to nodes in the `LinkedList`
-    links: [Link<T>; PROXY_SIZE],
+    links: [Link<Item<K, V>>; PROXY_SIZE],
 }
 
-/// A Cache Sensitive Skip List
-#[derive(Debug, Default)]
-pub struct SkipList<T> {
-    /// The fast lanes.
-    lanes: Vec<T>,
-    /// The proxy list.
-    proxy_list: Vec<Proxy<T>>,
-    /// The linked list containing all the nodes.
-    linked_list: LinkedList<T>,
-    /// The number of elements in the `SkipList`.
-    len: usize,
+/// A reference to a fast lane
+pub struct Lane<'a, T> {
+    lane: &'a [T],
 }
 
-impl<T> SkipList<T> {
-    /// Create a new `SkipList`.
-    pub fn new() -> Self {
-        Self {
-            lanes: Vec::new(),
-            proxy_list: Vec::new(),
-            linked_list: LinkedList::new(),
-            len: 0,
-        }
+impl<'a, T> Lane<'a, T> {
+    /// Create a new `Lane`.
+    pub fn new(lane: &'a [T]) -> Self {
+        Self { lane }
     }
+}
 
+/// Is all the fast lanes used in the `SkipListMap`.
+pub struct Lanes<T> {
+    lanes: Vec<T>,
+}
+
+impl<T> Lanes<T> {
+    /// Create a new empty set of `Lanes`.
+    pub fn new() -> Self {
+        Self { lanes: Vec::new() }
+    }
     /// Calculates the number of elements at a specific level.
     /// The formula is as follows ceil(Total Elements / ((Skipping Factor) ^ Level))
     fn level_len(&self, level: usize) -> usize {
         // remember we start 0 indexed
         let level_power = P.pow(level as u32 + 1);
         // This is a cheap way to perform ceiling operations on integers
-        (self.len() + level_power - 1) / level_power
+        (self.lanes.len() + level_power - 1) / level_power
     }
 
     /// Calculates the start index of a specific level
@@ -82,11 +87,11 @@ impl<T> SkipList<T> {
         // remember we start 0 indexed
 
         let pk = P.pow(level as u32);
-        level + (self.len() - 1) * ((pk - 1) / P - 1)
+        level + (self.lanes.len() - 1) * ((pk - 1) / P - 1)
     }
 
     /// Retrieve fast lane located on the nth level.
-    fn level(&self, level: usize) -> &[T] {
+    fn level(&self, level: usize) -> Lane<'_, T> {
         // if it is the highest level we start at
         // Calculating the beginning and end of the level
         // 1. calculate the number of elements in the level
@@ -95,26 +100,44 @@ impl<T> SkipList<T> {
         // 2. find the start of the level
         let level_start = self.level_start(level);
 
-        &self.lanes[level_start..level_start + num_elements]
+        Lane::new(&self.lanes[level_start..level_start + num_elements])
     }
 
-    /// The number of elements in the `SkipList`.
+    /// The number of fast lanes
+    // TODO: Maybe change to a smalelr size like u8 or u32
+    pub fn num_lanes(&self) -> usize {
+        LEVELS
+    }
+}
+
+/// A Cache Sensitive Skip List
+#[derive(Debug, Default)]
+pub struct SkipListMap<K, V> {
+    /// The fast lanes.
+    lanes: Vec<K>,
+    /// The proxy list.
+    proxy_list: Vec<Proxy<K, V>>,
+    /// The linked list containing all the nodes.
+    linked_list: LinkedList<Item<K, V>>,
+    /// The number of elements in the `SkipListMap`.
+    len: usize,
+}
+
+impl<K, V> SkipListMap<K, V> {
+    /// Create a new `SkipListMap`.
+    pub fn new() -> Self {
+        Self {
+            lanes: Vec::new(),
+            proxy_list: Vec::new(),
+            linked_list: LinkedList::new(),
+            len: 0,
+        }
+    }
+
+    /// The number of elements in the `SkipListMap`.
     pub fn len(&self) -> usize {
         self.len
     }
 }
 
-impl<T> SkipList<T>
-where
-    T: PartialOrd + PartialEq,
-{
-    /// Insertes an element into the `SkipList`.
-    pub fn insert(&mut self, elem: T) {}
-
-    /// Finds the `Node` in the `SkipList` that is either just before the next greatest `Node` or equal to the value
-    fn find(&self, elem: &T) -> Link<T> {
-        for level in LEVELS - 1..=0 {}
-
-        todo!()
-    }
-}
+impl<K, V> SkipListMap<K, V> where K: PartialOrd + PartialEq {}
