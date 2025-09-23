@@ -1,4 +1,5 @@
 use crate::unsync::linked_list::{Link, LinkedList};
+use std::borrow::Borrow;
 
 /// The number of elements contained in each `Proxy`.
 const PROXY_SIZE: usize = 4;
@@ -27,18 +28,25 @@ struct Proxy<K, V> {
 }
 
 /// A reference to a fast lane
+#[derive(Debug)]
 pub struct Lane<'a, T> {
     lane: &'a [T],
 }
 
 impl<'a, T> Lane<'a, T> {
     /// Create a new `Lane`.
-    pub fn new(lane: &'a [T]) -> Self {
+    fn new(lane: &'a [T]) -> Self {
         Self { lane }
+    }
+
+    /// Get the length of the `Lane`.
+    fn len(&self) -> usize {
+        self.lane.len()
     }
 }
 
 /// Is all the fast lanes used in the `SkipListMap`.
+#[derive(Debug, Default)]
 pub struct Lanes<T> {
     lanes: Vec<T>,
 }
@@ -50,7 +58,7 @@ impl<T> Lanes<T> {
     }
     /// Calculates the number of elements at a specific level.
     /// The formula is as follows ceil(Total Elements / ((Skipping Factor) ^ Level))
-    fn level_len(&self, level: usize) -> usize {
+    fn lane_len(&self, level: usize) -> usize {
         // remember we start 0 indexed
         let level_power = P.pow(level as u32 + 1);
         // This is a cheap way to perform ceiling operations on integers
@@ -80,7 +88,7 @@ impl<T> Lanes<T> {
     ///   S(k) = k + (N - 1) * (P^k - 1) / (P^k * (P - 1))
     ///
     /// Special case: if P = 1, then each term = N, so S(k) = k * N.
-    fn level_start(&self, level: usize) -> usize {
+    fn lane_start(&self, level: usize) -> usize {
         // The start of a level is the sum of the lengths of the previous levels
         // taking the formula for the level_len summing it an simplifying leads to an
         // equation with no loops, aint that cool
@@ -91,21 +99,21 @@ impl<T> Lanes<T> {
     }
 
     /// Retrieve fast lane located on the nth level.
-    fn level(&self, level: usize) -> Lane<'_, T> {
+    fn lane(&self, level: usize) -> Lane<'_, T> {
         // if it is the highest level we start at
         // Calculating the beginning and end of the level
         // 1. calculate the number of elements in the level
-        let num_elements = self.level_len(level);
+        let num_elements = self.lane_len(level);
 
         // 2. find the start of the level
-        let level_start = self.level_start(level);
+        let level_start = self.lane_start(level);
 
         Lane::new(&self.lanes[level_start..level_start + num_elements])
     }
 
     /// The number of fast lanes
-    // TODO: Maybe change to a smalelr size like u8 or u32
-    pub fn num_lanes(&self) -> usize {
+    // TODO: Maybe change to a smaller size like u8 or u32
+    fn num_lanes(&self) -> usize {
         LEVELS
     }
 }
@@ -114,7 +122,7 @@ impl<T> Lanes<T> {
 #[derive(Debug, Default)]
 pub struct SkipListMap<K, V> {
     /// The fast lanes.
-    lanes: Vec<K>,
+    lanes: Lanes<K>,
     /// The proxy list.
     proxy_list: Vec<Proxy<K, V>>,
     /// The linked list containing all the nodes.
@@ -127,7 +135,7 @@ impl<K, V> SkipListMap<K, V> {
     /// Create a new `SkipListMap`.
     pub fn new() -> Self {
         Self {
-            lanes: Vec::new(),
+            lanes: Lanes::new(),
             proxy_list: Vec::new(),
             linked_list: LinkedList::new(),
             len: 0,
@@ -140,4 +148,21 @@ impl<K, V> SkipListMap<K, V> {
     }
 }
 
-impl<K, V> SkipListMap<K, V> where K: PartialOrd + PartialEq {}
+impl<K, V> SkipListMap<K, V>
+where
+    K: Ord + Eq,
+{
+    /// Retrieves an item from the `SkipListMap`.
+    pub fn get<Q>(&self, key: &Q) -> Option<&V>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Ord + ?Sized,
+    {
+        for level in LEVELS - 1..=0 {
+            // get the lane that corresponding to that level
+            let lane = self.lanes.lane(level);
+        }
+
+        todo!()
+    }
+}

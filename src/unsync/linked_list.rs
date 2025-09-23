@@ -26,6 +26,12 @@ impl<T> Link<T> {
     }
 }
 
+impl<T> AsRef<T> for Link<T> {
+    fn as_ref(&self) -> &T {
+        &self.node().value
+    }
+}
+
 impl<T> Clone for Link<T> {
     fn clone(&self) -> Self {
         Self {
