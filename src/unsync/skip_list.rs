@@ -1,5 +1,49 @@
-use crate::unsync::linked_list::{Link, LinkedList};
-use std::borrow::Borrow;
+use std::{borrow::Borrow, ptr::NonNull};
+
+type Link<K, V> = Option<NonNull<Node<K, V>>>;
+
+/// A `Node` in the underlying linked list.
+#[derive(Debug)]
+struct Node<K, V> {
+    /// The key for the node.
+    key: K,
+    /// The value associated with a key.
+    value: V,
+    /// The next `Node`.
+    next: Link<K, V>,
+}
+
+impl<K, V> Node<K, V> {
+    /// Create a new `Node` with no next `Node` from a value.
+    fn new(key: K, value: V) -> Self {
+        Self {
+            key,
+            value,
+            next: None,
+        }
+    }
+
+    /// Appends a `Node` to self
+    fn append(&mut self, node: impl Into<Link<K, V>>) {
+        self.next = node.into();
+    }
+
+    /// Get a refernce to the key
+    fn key(&self) -> &K {
+        &self.key
+    }
+
+    /// Get a refernce to the value
+    fn value(&self) -> &V {
+        &self.value
+    }
+}
+
+impl<K, V> From<Node<K, V>> for Link<K, V> {
+    fn from(value: Node<K, V>) -> Self {
+        Some(unsafe { NonNull::new_unchecked(Box::into_raw(Box::new(value))) })
+    }
+}
 
 /// The number of elements contained in each `Proxy`.
 const PROXY_SIZE: usize = 4;
@@ -11,20 +55,13 @@ const P: usize = 4;
 /// The number of fastlane levels in the `SkipList`.
 const LEVELS: usize = 2;
 
-/// An Item that is stored in the `SkipListMap`
-#[derive(Debug)]
-struct Item<K, V> {
-    key: K,
-    value: V,
-}
-
 /// Used as a Proxy between the fast lanes and the linked list
 #[derive(Debug)]
 struct Proxy<K, V> {
     // The values that map to links
     values: [K; PROXY_SIZE],
     // The links to nodes in the `LinkedList`
-    links: [Link<Item<K, V>>; PROXY_SIZE],
+    links: [Link<K, V>; PROXY_SIZE],
 }
 
 /// A reference to a fast lane
@@ -126,7 +163,7 @@ pub struct SkipListMap<K, V> {
     /// The proxy list.
     proxy_list: Vec<Proxy<K, V>>,
     /// The linked list containing all the nodes.
-    linked_list: LinkedList<Item<K, V>>,
+    linked_list: Link<K, V>,
     /// The number of elements in the `SkipListMap`.
     len: usize,
 }
@@ -137,7 +174,7 @@ impl<K, V> SkipListMap<K, V> {
         Self {
             lanes: Lanes::new(),
             proxy_list: Vec::new(),
-            linked_list: LinkedList::new(),
+            linked_list: None,
             len: 0,
         }
     }
