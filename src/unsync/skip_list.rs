@@ -1,4 +1,4 @@
-use std::{borrow::Borrow, ptr::NonNull};
+use std::{borrow::Borrow, ops::Index, ptr::NonNull};
 
 type Link<K, V> = Option<NonNull<Node<K, V>>>;
 
@@ -66,19 +66,35 @@ struct Proxy<K, V> {
 
 /// A reference to a fast lane
 #[derive(Debug)]
-pub struct Lane<'a, T> {
-    lane: &'a [T],
+pub struct Lane<'a, K> {
+    lane: &'a [K],
 }
 
-impl<'a, T> Lane<'a, T> {
+impl<'a, K> Lane<'a, K> {
     /// Create a new `Lane`.
-    fn new(lane: &'a [T]) -> Self {
+    fn new(lane: &'a [K]) -> Self {
         Self { lane }
     }
 
     /// Get the length of the `Lane`.
     fn len(&self) -> usize {
         self.lane.len()
+    }
+
+    /// Find the index in the `Lane` that contains the passed in key or the index - 1 of the value just larger then it.
+    /// It is assumed the `Lane` is sorted in ascending order.
+    fn find<Q>(&self, key: &Q) -> usize
+    where
+        Q: Ord + ?Sized,
+        K: Ord + Borrow<Q>,
+    {
+        self.lane.iter().take_while(|&k| key <= k.borrow()).count()
+    }
+
+    // TODO: Maybe implement index and have a get_unchecked
+    /// Get access to the inncer slice
+    fn inner(&self) -> &[K] {
+        self.lane
     }
 }
 
@@ -187,19 +203,31 @@ impl<K, V> SkipListMap<K, V> {
 
 impl<K, V> SkipListMap<K, V>
 where
-    K: Ord + Eq,
+    K: Ord,
 {
     /// Retrieves an item from the `SkipListMap`.
     pub fn get<Q>(&self, key: &Q) -> Option<&V>
     where
         K: Borrow<Q>,
-        Q: Eq + Ord + ?Sized,
+        Q: Ord + ?Sized,
     {
+        let key = key.borrow();
+
         for level in LEVELS - 1..=0 {
             // get the lane that corresponding to that level
             let lane = self.lanes.lane(level);
+            // get the index in the lane that is the key or just less than the key
+            let index = lane.find(key);
+            // check if the index contains the key
+            if unsafe { lane.inner().get_unchecked(index) }.borrow() == key {}
         }
 
+        todo!()
+    }
+
+    /// Insert a key value pair into the `SkipListMap`.
+    /// Returns the value previously associated with the key and replaces it with the new one if a previous exists.
+    pub fn insert(&mut self, key: K, value: V) -> Option<V> {
         todo!()
     }
 }
