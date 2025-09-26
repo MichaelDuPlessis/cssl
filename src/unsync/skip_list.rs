@@ -1,6 +1,37 @@
-use std::{borrow::Borrow, ops::Index, ptr::NonNull};
+use std::{borrow::Borrow, fmt::Debug, ptr::NonNull};
 
 type Link<K, V> = Option<NonNull<Node<K, V>>>;
+
+/// An key: value pair stored in the `SkipListMap`.
+struct Item<K, V> {
+    key: K,
+    value: V,
+}
+
+impl<K, V> Item<K, V> {
+    /// Retrieve a reference to the key.
+    fn key(&self) -> &K {
+        &self.key
+    }
+
+    /// Retrieve a reference to the value.
+    fn value(&self) -> &V {
+        &self.value
+    }
+}
+
+impl<K, V> Debug for Item<K, V>
+where
+    K: Debug,
+    V: Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Item")
+            .field("key", &self.key)
+            .field("value", &self.value)
+            .finish()
+    }
+}
 
 /// A `Node` in the underlying linked list.
 #[derive(Debug)]
@@ -64,15 +95,41 @@ struct Proxy<K, V> {
     links: [Link<K, V>; PROXY_SIZE],
 }
 
-/// A reference to a fast lane
+/// A list of `Proxy` structs that link to the underlying linked list.
 #[derive(Debug)]
-pub struct Lane<'a, K> {
-    lane: &'a [K],
+struct ProxyList<K, V> {
+    list: Vec<Proxy<K, V>>,
 }
 
-impl<'a, K> Lane<'a, K> {
+impl<K, V> ProxyList<K, V> {
+    /// Create a new empty `Self`.
+    fn new() -> Self {
+        Self {
+            list: Default::default(),
+        }
+    }
+
+    /// Given the level and P value as well as the index in the level return the `Proxy` at the index.
+    fn get_proxy(&self, level: usize, p: usize, index: usize) -> &Proxy<K, V> {
+        todo!()
+    }
+}
+
+impl<K, V> Default for ProxyList<K, V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A reference to a fast lane
+#[derive(Debug)]
+struct Lane<'a, K, V> {
+    lane: &'a [Item<K, V>],
+}
+
+impl<'a, K, V> Lane<'a, K, V> {
     /// Create a new `Lane`.
-    fn new(lane: &'a [K]) -> Self {
+    fn new(lane: &'a [Item<K, V>]) -> Self {
         Self { lane }
     }
 
@@ -88,23 +145,26 @@ impl<'a, K> Lane<'a, K> {
         Q: Ord + ?Sized,
         K: Ord + Borrow<Q>,
     {
-        self.lane.iter().take_while(|&k| key <= k.borrow()).count()
+        // TODO: Change to something like binary search since this is sorted
+        self.lane
+            .iter()
+            .take_while(|&item| key <= item.key().borrow())
+            .count()
     }
 
     // TODO: Maybe implement index and have a get_unchecked
     /// Get access to the inncer slice
-    fn inner(&self) -> &[K] {
+    fn inner(&self) -> &[Item<K, V>] {
         self.lane
     }
 }
 
 /// Is all the fast lanes used in the `SkipListMap`.
-#[derive(Debug, Default)]
-pub struct Lanes<T> {
-    lanes: Vec<T>,
+pub struct FastLanes<K, V> {
+    lanes: Vec<Item<K, V>>,
 }
 
-impl<T> Lanes<T> {
+impl<K, V> FastLanes<K, V> {
     /// Create a new empty set of `Lanes`.
     pub fn new() -> Self {
         Self { lanes: Vec::new() }
@@ -152,7 +212,7 @@ impl<T> Lanes<T> {
     }
 
     /// Retrieve fast lane located on the nth level.
-    fn lane(&self, level: usize) -> Lane<'_, T> {
+    fn lane(&self, level: usize) -> Lane<'_, K, V> {
         // if it is the highest level we start at
         // Calculating the beginning and end of the level
         // 1. calculate the number of elements in the level
@@ -171,13 +231,31 @@ impl<T> Lanes<T> {
     }
 }
 
+impl<K, V> Default for FastLanes<K, V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<K, V> Debug for FastLanes<K, V>
+where
+    K: Debug,
+    V: Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FastLanes")
+            .field("lanes", &self.lanes)
+            .finish()
+    }
+}
+
 /// A Cache Sensitive Skip List
 #[derive(Debug, Default)]
 pub struct SkipListMap<K, V> {
     /// The fast lanes.
-    lanes: Lanes<K>,
+    lanes: FastLanes<K, V>,
     /// The proxy list.
-    proxy_list: Vec<Proxy<K, V>>,
+    proxy_list: ProxyList<K, V>,
     /// The linked list containing all the nodes.
     linked_list: Link<K, V>,
     /// The number of elements in the `SkipListMap`.
@@ -188,8 +266,8 @@ impl<K, V> SkipListMap<K, V> {
     /// Create a new `SkipListMap`.
     pub fn new() -> Self {
         Self {
-            lanes: Lanes::new(),
-            proxy_list: Vec::new(),
+            lanes: FastLanes::new(),
+            proxy_list: Default::default(),
             linked_list: None,
             len: 0,
         }
@@ -219,7 +297,14 @@ where
             // get the index in the lane that is the key or just less than the key
             let index = lane.find(key);
             // check if the index contains the key
-            if unsafe { lane.inner().get_unchecked(index) }.borrow() == key {}
+            if unsafe { lane.inner().get_unchecked(index) }.key().borrow() == key {
+                // if it does we can skip straight to the proxy list
+                let proxy = self.proxy_list.get_proxy(level, P, index);
+            } else {
+                // if not we are going to need to go to the next level
+                // but we also need to skip some of the first elements in the next level since
+                // the previous level indicates where to start in the next level
+            }
         }
 
         todo!()
