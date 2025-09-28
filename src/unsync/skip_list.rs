@@ -1,6 +1,14 @@
 use std::{borrow::Borrow, fmt::Debug, ptr::NonNull};
 
-type Link<K, V> = Option<NonNull<Node<K, V>>>;
+/// The number of elements contained in each `Proxy`.
+const PROXY_SIZE: usize = 4;
+
+/// The P value for the `SkipList`, this is how many elements are skipped going up levels of the fast lane.
+/// This will be known as the skipping factor
+const P: usize = 4;
+
+/// The number of fastlane levels in the `SkipList`.
+const LEVELS: usize = 2;
 
 /// An key: value pair stored in the `SkipListMap`.
 struct Item<K, V> {
@@ -9,6 +17,11 @@ struct Item<K, V> {
 }
 
 impl<K, V> Item<K, V> {
+    /// Create a new item from a key and value
+    fn new(key: K, value: V) -> Self {
+        Self { key, value }
+    }
+
     /// Retrieve a reference to the key.
     fn key(&self) -> &K {
         &self.key
@@ -33,13 +46,12 @@ where
     }
 }
 
+type Link<K, V> = Option<NonNull<Node<K, V>>>;
+
 /// A `Node` in the underlying linked list.
 #[derive(Debug)]
 struct Node<K, V> {
-    /// The key for the node.
-    key: K,
-    /// The value associated with a key.
-    value: V,
+    item: Item<K, V>,
     /// The next `Node`.
     next: Link<K, V>,
 }
@@ -48,8 +60,7 @@ impl<K, V> Node<K, V> {
     /// Create a new `Node` with no next `Node` from a value.
     fn new(key: K, value: V) -> Self {
         Self {
-            key,
-            value,
+            item: Item::new(key, value),
             next: None,
         }
     }
@@ -61,12 +72,12 @@ impl<K, V> Node<K, V> {
 
     /// Get a refernce to the key
     fn key(&self) -> &K {
-        &self.key
+        self.item.key()
     }
 
     /// Get a refernce to the value
     fn value(&self) -> &V {
-        &self.value
+        self.item.value()
     }
 }
 
@@ -76,23 +87,28 @@ impl<K, V> From<Node<K, V>> for Link<K, V> {
     }
 }
 
-/// The number of elements contained in each `Proxy`.
-const PROXY_SIZE: usize = 4;
-
-/// The P value for the `SkipList`, this is how many elements are skipped going up levels of the fast lane.
-/// This will be known as the skipping factor
-const P: usize = 4;
-
-/// The number of fastlane levels in the `SkipList`.
-const LEVELS: usize = 2;
-
 /// Used as a Proxy between the fast lanes and the linked list
 #[derive(Debug)]
 struct Proxy<K, V> {
-    // The values that map to links
-    values: [K; PROXY_SIZE],
     // The links to nodes in the `LinkedList`
     links: [Link<K, V>; PROXY_SIZE],
+}
+
+impl<K, V> Proxy<K, V> {
+    /// Find the `Link` which is either the passed in key or just less than the key
+    fn get<Q>(&self, key: &Q) -> Option<&Node<K, V>>
+    where
+        Q: Ord + ?Sized,
+        K: Ord + Borrow<Q>,
+    {
+        // There is a unchecked unwrapping but if we some how have a link that points to nothing we messed up somewhere else
+        unsafe {
+            self.links
+                .iter()
+                .map(|link| link.unwrap_unchecked().as_ref())
+                .find(|&node| node.key().borrow() == key)
+        }
+    }
 }
 
 /// A list of `Proxy` structs that link to the underlying linked list.
@@ -110,8 +126,11 @@ impl<K, V> ProxyList<K, V> {
     }
 
     /// Given the level and P value as well as the index in the level return the `Proxy` at the index.
-    fn get_proxy(&self, level: usize, p: usize, index: usize) -> &Proxy<K, V> {
-        todo!()
+    // TODO: maybe implement index
+    fn get_proxy(&self, index: usize) -> &Proxy<K, V> {
+        // The index in the proxy list is the passed in index multiplied by the skipping factor (this is just what hte actual index of the element is)
+        // divided by the the PROXY_SIZE
+        &self.list[(index * P) / PROXY_SIZE]
     }
 }
 
@@ -140,7 +159,9 @@ impl<'a, K, V> Lane<'a, K, V> {
 
     /// Find the index in the `Lane` that contains the passed in key or the index - 1 of the value just larger then it.
     /// It is assumed the `Lane` is sorted in ascending order.
-    fn find<Q>(&self, key: &Q) -> usize
+    /// It requires the level as well as the previous index so that it knows how far to skip. It needs to skip some elements
+    /// based on the result from the previous level searched
+    fn find<Q>(&self, key: &Q, level: usize, prev_index: usize) -> usize
     where
         Q: Ord + ?Sized,
         K: Ord + Borrow<Q>,
@@ -148,6 +169,7 @@ impl<'a, K, V> Lane<'a, K, V> {
         // TODO: Change to something like binary search since this is sorted
         self.lane
             .iter()
+            .skip(prev_index * P.pow(level as u32))
             .take_while(|&item| key <= item.key().borrow())
             .count()
     }
@@ -291,23 +313,32 @@ where
     {
         let key = key.borrow();
 
-        for level in LEVELS - 1..=0 {
+        let mut index = 0;
+        for level in (0..LEVELS).rev() {
             // get the lane that corresponding to that level
             let lane = self.lanes.lane(level);
             // get the index in the lane that is the key or just less than the key
-            let index = lane.find(key);
+            index = lane.find(key, level, index);
             // check if the index contains the key
-            if unsafe { lane.inner().get_unchecked(index) }.key().borrow() == key {
-                // if it does we can skip straight to the proxy list
-                let proxy = self.proxy_list.get_proxy(level, P, index);
-            } else {
-                // if not we are going to need to go to the next level
-                // but we also need to skip some of the first elements in the next level since
-                // the previous level indicates where to start in the next level
+            let item = unsafe { lane.inner().get_unchecked(index) };
+            if item.key().borrow() == key {
+                // if it does we can just return the item
+                // I don't like this, it makes me sad why must I transmute
+                // must I even transmute or am I just dumb
+                return Some(unsafe { std::mem::transmute(item.value()) });
             }
+            // if not we are going to need to go to the next level
+            // but we also need to skip some of the first elements in the next level since
+            // the previous level indicates where to start in the next level
         }
 
-        todo!()
+        // The key was not found in the fast lanes so we must look at the proxy list based off of the last index
+        // which is the index found in the lowest level
+
+        let proxy = self.proxy_list.get_proxy(index);
+
+        // finding the noce in the proxy list
+        proxy.get(key).map(|node| node.value())
     }
 
     /// Insert a key value pair into the `SkipListMap`.
