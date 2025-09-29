@@ -436,12 +436,14 @@ where
                 // if so replace the value
                 Some(node.item_mut().replace(value))
             } else {
+                self.len += 1;
                 // else we append the new node infront of it
                 let new_node = Node::new(key, value);
                 node.append(new_node);
                 None
             }
         } else {
+            self.len += 1;
             // if there is no node it means this node belongs in the front of the linked list
             // I think at least still need to properly think about this and confirm it
             let mut new_node = Node::new(key, value);
