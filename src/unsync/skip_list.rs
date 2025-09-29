@@ -107,6 +107,14 @@ impl<K, V> Node<K, V> {
             _marker: PhantomData,
         }
     }
+
+    /// Create an iterator over mutable references
+    fn iter_mut(&mut self) -> IterMut<'_, K, V> {
+        IterMut {
+            current: Some(self.into()),
+            _marker: PhantomData,
+        }
+    }
 }
 
 impl<K, V> From<Node<K, V>> for Option<Link<K, V>> {
@@ -115,14 +123,14 @@ impl<K, V> From<Node<K, V>> for Option<Link<K, V>> {
     }
 }
 
-/// Immutabale iterator for `LinkedList`.
+/// Immutabale iterator for `Node`.
 struct Iter<'a, K: 'a, V: 'a> {
     current: Option<Link<K, V>>,
     _marker: PhantomData<&'a Link<K, V>>,
 }
 
 impl<'a, K, V> Iterator for Iter<'a, K, V> {
-    type Item = &'a Item<K, V>;
+    type Item = &'a Node<K, V>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let link = self.current?; // copy out the link (Link<T> is Copy)
@@ -131,7 +139,7 @@ impl<'a, K, V> Iterator for Iter<'a, K, V> {
         // Advance the iterator
         self.current = node.next();
 
-        Some(node.item())
+        Some(node)
     }
 }
 
@@ -145,101 +153,33 @@ impl<'a, K, V> IntoIterator for &'a Node<K, V> {
     }
 }
 
-/// Used as a Proxy between the fast lanes and the linked list
-#[derive(Debug)]
-struct Proxy<K, V> {
-    // The links to nodes in the `LinkedList`
-    links: [Link<K, V>; PROXY_SIZE],
+/// Mutable iterator for `Node`.
+struct IterMut<'a, K: 'a, V: 'a> {
+    current: Option<Link<K, V>>,
+    _marker: PhantomData<&'a mut Link<K, V>>,
 }
 
-impl<K, V> Proxy<K, V> {
-    /// Find the `Link` which is the passed in key.
-    fn get<Q>(&self, key: &Q) -> Option<&Node<K, V>>
-    where
-        Q: Ord + ?Sized,
-        K: Ord + Borrow<Q>,
-    {
-        // There is a unchecked unwrapping but if we some how have a link that points to nothing we messed up somewhere else
-        self.links
-            .iter()
-            .map(|link| unsafe { link.as_ref() })
-            .find(|&node| node.key().borrow() == key)
-    }
+impl<'a, K, V> Iterator for IterMut<'a, K, V> {
+    type Item = &'a mut Node<K, V>;
 
-    /// Find the nearest `Link` or the `Link` which is either the passed in key or just less than the key.
-    fn get_nearest<Q>(&self, key: &Q) -> Option<&Node<K, V>>
-    where
-        Q: Ord + ?Sized,
-        K: Ord + Borrow<Q>,
-    {
-        // There is a unchecked unwrapping but if we some how have a link that points to nothing we messed up somewhere else
-        self.links
-            .iter()
-            .map(|link| unsafe { link.as_ref() })
-            .find(|&node| node.key().borrow() <= key)
-    }
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut link = self.current?; // copy out the link (Link<T> is Copy)
+        let node = unsafe { link.as_mut() };
 
-    /// Find the `Link` which is the passed in key.
-    fn get_mut<Q>(&mut self, key: &Q) -> Option<&mut Node<K, V>>
-    where
-        Q: Ord + ?Sized,
-        K: Ord + Borrow<Q>,
-    {
-        // There is a unchecked unwrapping but if we some how have a link that points to nothing we messed up somewhere else
-        self.links
-            .iter_mut()
-            .map(|link| unsafe { link.as_mut() })
-            .find(|node| node.key().borrow() == key)
-    }
+        // Advance the iterator
+        self.current = node.next;
 
-    /// Find the nearest `Link` or the `Link` which is either the passed in key or just less than the key.
-    fn get_nearest_mut<Q>(&mut self, key: &Q) -> Option<&mut Node<K, V>>
-    where
-        Q: Ord + ?Sized,
-        K: Ord + Borrow<Q>,
-    {
-        // There is a unchecked unwrapping but if we some how have a link that points to nothing we messed up somewhere else
-        self.links
-            .iter_mut()
-            .map(|link| unsafe { link.as_mut() })
-            .find(|node| node.key().borrow() <= key)
+        Some(node)
     }
 }
 
-/// A list of `Proxy` structs that link to the underlying linked list.
-#[derive(Debug)]
-struct ProxyList<K, V> {
-    list: Vec<Proxy<K, V>>,
-}
+impl<'a, K, V> IntoIterator for &'a mut Node<K, V> {
+    type Item = <Self::IntoIter as Iterator>::Item;
 
-impl<K, V> ProxyList<K, V> {
-    /// Create a new empty `Self`.
-    fn new() -> Self {
-        Self {
-            list: Default::default(),
-        }
-    }
+    type IntoIter = IterMut<'a, K, V>;
 
-    /// Given the level and P value as well as the index in the level return the `Proxy` at the index.
-    // TODO: maybe implement index
-    fn get_proxy(&self, index: usize) -> &Proxy<K, V> {
-        // The index in the proxy list is the passed in index multiplied by the skipping factor (this is just what hte actual index of the element is)
-        // divided by the the PROXY_SIZE
-        &self.list[(index * P) / PROXY_SIZE]
-    }
-
-    /// Given the level and P value as well as the index in the level return the `Proxy` at the index.
-    // TODO: maybe implement index
-    fn get_proxy_mut(&mut self, index: usize) -> &mut Proxy<K, V> {
-        // The index in the proxy list is the passed in index multiplied by the skipping factor (this is just what hte actual index of the element is)
-        // divided by the the PROXY_SIZE
-        &mut self.list[(index * P) / PROXY_SIZE]
-    }
-}
-
-impl<K, V> Default for ProxyList<K, V> {
-    fn default() -> Self {
-        Self::new()
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter_mut()
     }
 }
 
@@ -380,8 +320,6 @@ where
 pub struct SkipListMap<K, V> {
     /// The fast lanes.
     fast_lanes: FastLanes<K, V>,
-    /// The proxy list.
-    proxy_list: ProxyList<K, V>,
     /// The linked list containing all the nodes.
     data_list: Option<Link<K, V>>,
     /// The number of elements in the `SkipListMap`.
@@ -393,7 +331,6 @@ impl<K, V> SkipListMap<K, V> {
     pub fn new() -> Self {
         Self {
             fast_lanes: FastLanes::new(),
-            proxy_list: Default::default(),
             data_list: None,
             len: 0,
         }
@@ -418,7 +355,7 @@ where
         let key = key.borrow();
 
         let mut index = 0;
-        for level in (0..LEVELS).rev() {
+        for level in (1..LEVELS).rev() {
             // get the lane that corresponding to that level
             let lane = self.fast_lanes.lane(level);
             // get the index in the lane that is the key or just less than the key
@@ -436,13 +373,24 @@ where
             // the previous level indicates where to start in the next level
         }
 
-        // The key was not found in the fast lanes so we must look at the proxy list based off of the last index
-        // which is the index found in the lowest level
+        // this is just a repeat of the top logic
+        let lane = self.fast_lanes.lane(0);
+        let index = lane.find(key, 0, index);
+        let node = unsafe { lane.inner().get_unchecked(index).as_ref() };
 
-        let proxy = self.proxy_list.get_proxy(index);
+        // the key was not found in the fast lanes so now we must iterate over the node list until the key is found or a larger is found in which case
+        // it means the key does not exist
+        let node = node
+            .iter()
+            .take_while(|&item| key <= item.key().borrow())
+            .last()?;
 
-        // finding the node in the proxy list
-        proxy.get(key).map(|node| node.value())
+        // now we need to check if the key was found
+        if node.key().borrow() == key {
+            Some(node.value())
+        } else {
+            None
+        }
     }
 
     /// Insert a key value pair into the `SkipListMap`.
@@ -468,13 +416,19 @@ where
             // the previous level indicates where to start in the next level
         }
 
-        // The key was not found in the fast lanes so we must look at the proxy list based off of the last index
-        // which is the index found in the lowest level
+        // this is just a repeat of the top logic
+        let lane = self.fast_lanes.lane(0);
+        let index = lane.find(&key, 0, index);
+        let node = unsafe { lane.inner().get_unchecked(index) };
+        // TODO: same as above todo
+        let node = unsafe { &mut *node.as_ptr() };
 
-        let proxy = self.proxy_list.get_proxy_mut(index);
-
-        // finding the nearest node in the proxy list
-        let node = proxy.get_nearest_mut(&key);
+        // the key was not found in the fast lanes so now we must iterate over the node list until the key is found or a larger is found in which case
+        // it means the key does not exist
+        let node = node
+            .iter_mut()
+            .take_while(|item| &key <= item.key().borrow())
+            .last();
 
         if let Some(node) = node {
             // if there is a node first check if they have the same key
