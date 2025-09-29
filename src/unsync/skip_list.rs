@@ -95,6 +95,15 @@ impl<K, V> Node<K, V> {
         self.item.value()
     }
 
+    /// Checks if the passed in key matches the key of the Node.
+    fn key_matches<Q>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q> + Ord,
+        Q: Ord + ?Sized,
+    {
+        key == self.key().borrow()
+    }
+
     /// Get a pointer to the next node if there is one
     fn next(&self) -> Option<Link<K, V>> {
         self.next
@@ -352,8 +361,6 @@ where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        let key = key.borrow();
-
         let mut index = 0;
         for level in (1..LEVELS).rev() {
             // get the lane that corresponding to that level
@@ -362,7 +369,7 @@ where
             index = lane.find(key, level, index);
             // check if the index contains the key
             let node = unsafe { lane.inner().get_unchecked(index).as_ref() };
-            if node.key().borrow() == key {
+            if node.key_matches(key) {
                 // if it does we can just return the item
                 // I don't like this, it makes me sad why must I transmute
                 // must I even transmute or am I just dumb
@@ -386,7 +393,7 @@ where
             .last()?;
 
         // now we need to check if the key was found
-        if node.key().borrow() == key {
+        if node.key_matches(key) {
             Some(node.value())
         } else {
             None
@@ -407,7 +414,7 @@ where
 
             // TODO: this worries me since this seems unsafe, I should maybe change this
             let node = unsafe { &mut *node.as_ptr() };
-            if node.key().borrow() == &key {
+            if node.key_matches(&key) {
                 // if it does we can just update the item
                 return Some(node.item_mut().replace(value));
             }
@@ -432,7 +439,7 @@ where
 
         if let Some(node) = node {
             // if there is a node first check if they have the same key
-            if node.key().borrow() == &key {
+            if node.key_matches(&key) {
                 // if so replace the value
                 Some(node.item_mut().replace(value))
             } else {
