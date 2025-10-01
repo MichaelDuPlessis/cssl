@@ -1,8 +1,5 @@
 use std::{borrow::Borrow, fmt::Debug, marker::PhantomData, ptr::NonNull};
 
-/// The number of elements contained in each `Proxy`.
-const PROXY_SIZE: usize = 4;
-
 /// The P value for the `SkipList`, this is how many elements are skipped going up levels of the fast lane.
 /// This will be known as the skipping factor
 const P: usize = 4;
@@ -269,6 +266,7 @@ impl<K, V> FastLanes<K, V> {
     fn new() -> Self {
         Self { lanes: Vec::new() }
     }
+
     /// Calculates the number of elements at a specific level.
     /// The formula is as follows ceil(Total Elements / ((Skipping Factor) ^ Level))
     fn lane_len(&self, level: usize) -> usize {
@@ -422,6 +420,28 @@ impl<K, V> SkipListMap<K, V> {
     /// The number of elements in the `SkipListMap`.
     pub fn len(&self) -> usize {
         self.len
+    }
+
+    /// Builds the fast lanes from the data list.
+    fn build_fast_lanes(&mut self) {
+        // first calculate the needed size for the fast lanes
+        let len = (self.len() * (P.pow(LEVELS as u32) - 1)) / (P.pow(LEVELS as u32 - 1) * (P - 1));
+        let mut lanes: Vec<Link<K, V>> = Vec::with_capacity(len);
+        unsafe { lanes.set_len(len) };
+
+        if let Some(link) = self.data_list {
+            let node = unsafe { link.as_ref() };
+
+            for (i, node) in node.iter().step_by(P).enumerate() {
+                for level in 1..=LEVELS {
+                    if i % level == 0 {
+                        lanes[i * P.pow(level as u32)] = node.into();
+                    }
+                }
+            }
+        }
+
+        self.fast_lanes = FastLanes { lanes };
     }
 }
 
@@ -604,7 +624,7 @@ where
                     val
                 };
 
-                self.len = self.len.saturating_sub(1);
+                self.len -= 1;
                 return Some(value);
             }
 
