@@ -129,16 +129,16 @@ impl<K, V> Node<K, V> {
     }
 
     /// Create an iterator over immutable references
-    fn iter(&self) -> Iter<'_, K, V> {
-        Iter {
+    fn iter(&self) -> NodeIter<'_, K, V> {
+        NodeIter {
             current: Some(self.into()),
             _marker: PhantomData,
         }
     }
 
     /// Create an iterator over mutable references
-    fn iter_mut(&mut self) -> IterMut<'_, K, V> {
-        IterMut {
+    fn iter_mut(&mut self) -> NodeIterMut<'_, K, V> {
+        NodeIterMut {
             current: Some(self.into()),
             _marker: PhantomData,
         }
@@ -152,12 +152,12 @@ impl<K, V> From<Node<K, V>> for Option<Link<K, V>> {
 }
 
 /// Immutabale iterator for `Node`.
-struct Iter<'a, K: 'a, V: 'a> {
+struct NodeIter<'a, K: 'a, V: 'a> {
     current: Option<Link<K, V>>,
     _marker: PhantomData<&'a Link<K, V>>,
 }
 
-impl<'a, K, V> Iterator for Iter<'a, K, V> {
+impl<'a, K, V> Iterator for NodeIter<'a, K, V> {
     type Item = &'a Node<K, V>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -174,7 +174,7 @@ impl<'a, K, V> Iterator for Iter<'a, K, V> {
 impl<'a, K, V> IntoIterator for &'a Node<K, V> {
     type Item = <Self::IntoIter as Iterator>::Item;
 
-    type IntoIter = Iter<'a, K, V>;
+    type IntoIter = NodeIter<'a, K, V>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.iter()
@@ -182,12 +182,12 @@ impl<'a, K, V> IntoIterator for &'a Node<K, V> {
 }
 
 /// Mutable iterator for `Node`.
-struct IterMut<'a, K: 'a, V: 'a> {
+struct NodeIterMut<'a, K: 'a, V: 'a> {
     current: Option<Link<K, V>>,
     _marker: PhantomData<&'a mut Link<K, V>>,
 }
 
-impl<'a, K, V> Iterator for IterMut<'a, K, V> {
+impl<'a, K, V> Iterator for NodeIterMut<'a, K, V> {
     type Item = &'a mut Node<K, V>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -204,7 +204,7 @@ impl<'a, K, V> Iterator for IterMut<'a, K, V> {
 impl<'a, K, V> IntoIterator for &'a mut Node<K, V> {
     type Item = <Self::IntoIter as Iterator>::Item;
 
-    type IntoIter = IterMut<'a, K, V>;
+    type IntoIter = NodeIterMut<'a, K, V>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.iter_mut()
@@ -443,6 +443,14 @@ impl<K, V> SkipListMap<K, V> {
 
         self.fast_lanes = FastLanes { lanes };
     }
+
+    /// Create an immutable iterator.
+    fn iter(&self) -> Iter<'_, K, V> {
+        Iter {
+            current: self.data_list,
+            _marker: PhantomData,
+        }
+    }
 }
 
 impl<K, V> SkipListMap<K, V>
@@ -638,5 +646,36 @@ where
         }
 
         None
+    }
+}
+
+// TODO: I think this is unnecessary since we can just use Node iter
+/// Immutabale iterator for `LinkedList`.
+pub struct Iter<'a, K: 'a, V: 'a> {
+    current: Option<Link<K, V>>,
+    _marker: PhantomData<&'a Link<K, V>>,
+}
+
+impl<'a, K, V> Iterator for Iter<'a, K, V> {
+    type Item = (&'a K, &'a V);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let link = self.current?; // copy out the link (Link<T> is Copy)
+        let node = unsafe { link.as_ref() };
+
+        // Advance the iterator
+        self.current = node.next;
+
+        Some((node.key(), node.value()))
+    }
+}
+
+impl<'a, K, V> IntoIterator for &'a SkipListMap<K, V> {
+    type Item = <Self::IntoIter as Iterator>::Item;
+
+    type IntoIter = Iter<'a, K, V>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
     }
 }
