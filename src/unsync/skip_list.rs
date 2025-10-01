@@ -108,7 +108,7 @@ impl<K, V> Node<K, V> {
         Q: Ord + ?Sized,
     {
         self.iter()
-            .take_while(|&item| key <= item.key().borrow())
+            .take_while(|&item| key >= item.key().borrow())
             .last()
     }
 
@@ -119,7 +119,7 @@ impl<K, V> Node<K, V> {
         Q: Ord + ?Sized,
     {
         self.iter_mut()
-            .take_while(|item| key <= item.key().borrow())
+            .take_while(|item| key >= item.key().borrow())
             .last()
     }
 
@@ -311,6 +311,10 @@ impl<K, V> FastLanes<K, V> {
 
     /// Retrieve a reference to the fast lane located on the nth level.
     fn lane(&self, level: usize) -> Lane<'_, K, V> {
+        if self.lanes.is_empty() {
+            return Lane::new(&[]);
+        }
+
         // if it is the highest level we start at
         // Calculating the beginning and end of the level
         // 1. calculate the number of elements in the level
@@ -544,7 +548,14 @@ where
             // TODO: same as above todo
             unsafe { &mut *node.as_ptr() }
         } else {
-            unsafe { self.data_list?.as_mut() }
+            if let Some(mut link) = self.data_list {
+                unsafe { link.as_mut() }
+            } else {
+                // there is no head lets make one
+                self.len += 1;
+                self.data_list = Node::new(key, value).into();
+                return None;
+            }
         };
 
         // the key was not found in the fast lanes so now we must iterate over the node list until the key is found or a larger is found in which case
@@ -569,6 +580,7 @@ where
             // I think at least still need to properly think about this and confirm it
             let mut new_node = Node::new(key, value);
             new_node.append(self.data_list);
+            self.data_list = new_node.into();
             None
         }
     }
@@ -677,5 +689,72 @@ impl<'a, K, V> IntoIterator for &'a SkipListMap<K, V> {
 
     fn into_iter(self) -> Self::IntoIter {
         self.iter()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn basic_insertion_test() {
+        const NUM_VALUES: usize = 32;
+
+        let mut map = SkipListMap::default();
+        for i in 0..NUM_VALUES {
+            assert_eq!(None, map.insert(i, i));
+        }
+
+        assert_eq!(map.len(), NUM_VALUES);
+
+        for (i, (k, v)) in (0..NUM_VALUES).zip(map.iter()) {
+            assert_eq!(i, *k);
+            assert_eq!(i, *v);
+        }
+
+        assert_eq!(map.get(&8), Some(&8));
+        assert_eq!(map.get(&31), Some(&31));
+        assert_eq!(map.get(&12), Some(&12));
+        assert_eq!(map.get(&32), None);
+
+        for i in 0..NUM_VALUES {
+            assert_eq!(Some(i), map.insert(i, i + 1));
+        }
+        assert_eq!(map.len(), NUM_VALUES);
+    }
+
+    #[test]
+    fn basic_deletion_test() {
+        const NUM_VALUES: usize = 32;
+
+        let mut map = SkipListMap::default();
+        for i in 0..NUM_VALUES {
+            assert_eq!(None, map.insert(i, i));
+        }
+
+        assert_eq!(map.len(), NUM_VALUES);
+
+        assert_eq!(map.remove(&8), Some(8));
+        assert_eq!(map.remove(&31), Some(31));
+        assert_eq!(map.remove(&12), Some(12));
+        assert_eq!(map.remove(&12), None);
+        assert_eq!(map.remove(&32), None);
+
+        assert_eq!(map.len(), NUM_VALUES - 3);
+
+        assert_eq!(map.get(&8), None);
+        assert_eq!(map.get(&13), Some(&13));
+    }
+
+    #[test]
+    fn fast_lane_test() {
+        const NUM_VALUES: usize = 32;
+
+        let mut map = SkipListMap::default();
+        for i in 0..NUM_VALUES {
+            assert_eq!(None, map.insert(i, i));
+        }
+
+        map.build_fast_lanes();
     }
 }
