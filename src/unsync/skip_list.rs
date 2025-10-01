@@ -104,6 +104,28 @@ impl<K, V> Node<K, V> {
         key == self.key().borrow()
     }
 
+    /// Looks for the provided key in the `Node` and its successors and returns a reference to the `Node` with that key.
+    fn find<Q>(&self, key: &Q) -> Option<&Node<K, V>>
+    where
+        K: Borrow<Q> + Ord,
+        Q: Ord + ?Sized,
+    {
+        self.iter()
+            .take_while(|&item| key <= item.key().borrow())
+            .last()
+    }
+
+    /// Looks for the provided key in the `Node` and its successors and returns a reference to the `Node` with that key.
+    fn find_mut<Q>(&mut self, key: &Q) -> Option<&mut Node<K, V>>
+    where
+        K: Borrow<Q> + Ord,
+        Q: Ord + ?Sized,
+    {
+        self.iter_mut()
+            .take_while(|item| key <= item.key().borrow())
+            .last()
+    }
+
     /// Get a pointer to the next node if there is one
     fn next(&self) -> Option<Link<K, V>> {
         self.next
@@ -192,7 +214,7 @@ impl<'a, K, V> IntoIterator for &'a mut Node<K, V> {
     }
 }
 
-/// A reference to a fast lane
+/// A reference to a fast lane.
 #[derive(Debug)]
 struct Lane<'a, K, V> {
     lane: &'a [Link<K, V>],
@@ -209,22 +231,25 @@ impl<'a, K, V> Lane<'a, K, V> {
         self.lane.len()
     }
 
-    /// Find the index in the `Lane` that contains the passed in key or the index - 1 of the value just larger then it.
+    /// Find the index in the `Lane` that contains the passed in key or the index - 1 of the value just larger then it otherwise None.
     /// It is assumed the `Lane` is sorted in ascending order.
     /// It requires the level as well as the previous index so that it knows how far to skip. It needs to skip some elements
     /// based on the result from the previous level searched
-    fn find<Q>(&self, key: &Q, level: usize, prev_index: usize) -> usize
+    fn find<Q>(&self, key: &Q, level: usize, prev_index: usize) -> Option<usize>
     where
         Q: Ord + ?Sized,
         K: Ord + Borrow<Q>,
     {
         // TODO: Change to something like binary search since this is sorted
-        self.lane
+        let index = self
+            .lane
             .iter()
             .skip(prev_index * P.pow(level as u32))
             .map(|link| unsafe { link.as_ref() })
-            .take_while(|&item| key <= item.key().borrow())
-            .count()
+            .take_while(|&node| key <= node.key().borrow())
+            .count();
+
+        index.checked_sub(1)
     }
 
     // TODO: Maybe implement index and have a get_unchecked
@@ -286,7 +311,7 @@ impl<K, V> FastLanes<K, V> {
         level + (self.lanes.len() - 1) * ((pk - 1) / P - 1)
     }
 
-    /// Retrieve fast lane located on the nth level.
+    /// Retrieve a reference to the fast lane located on the nth level.
     fn lane(&self, level: usize) -> Lane<'_, K, V> {
         // if it is the highest level we start at
         // Calculating the beginning and end of the level
@@ -297,6 +322,55 @@ impl<K, V> FastLanes<K, V> {
         let level_start = self.lane_start(level);
 
         Lane::new(&self.lanes[level_start..level_start + num_elements])
+    }
+
+    /// Remove the specified key from all lanes and returns a link to the `Node` just before the remove key.
+    fn remove<Q>(&mut self, key: &Q) -> Option<Link<K, V>>
+    where
+        K: Borrow<Q> + Ord,
+        Q: Ord + ?Sized,
+    {
+        // get the previous element for lane 0 as if there isn't one the upper lanes will also not have one
+        let lane = self.lane(0);
+        let index = lane.find(key, 0, 0);
+
+        if let Some(index) = index {
+            // first check if the index found matches the key
+            let link = unsafe { lane.inner().get_unchecked(index) };
+            if unsafe { link.as_ref().key_matches(key) } {
+                let link = Some(unsafe { *lane.inner().get_unchecked(index.checked_sub(1)?) });
+
+                let abs_index = self.lane_start(0) + index;
+                if self.lanes.len() > abs_index {
+                    // check if the lane is long enought to copy next element
+                    self.lanes[abs_index] = self.lanes[abs_index + 1];
+                } else {
+                    // if we are at the end we can just pop from the back
+                    self.lanes.pop();
+                }
+
+                // if the key is in the lowest lane it must exist in the higher lanes
+                let mut index = index;
+                for level in 1..LEVELS {
+                    index = index / P;
+
+                    let abs_index = self.lane_start(level) + index;
+                    if self.lanes.len() > abs_index {
+                        // check if the lane is long enought to copy next element
+                        self.lanes[abs_index] = self.lanes[abs_index + 1];
+                    } else {
+                        // if we are at the end we can just pop from the back
+                        self.lanes.pop();
+                    }
+                }
+
+                link
+            } else {
+                Some(unsafe { *lane.inner().get_unchecked(index) })
+            }
+        } else {
+            None
+        }
     }
 
     /// The number of fast lanes
@@ -366,14 +440,19 @@ where
             // get the lane that corresponding to that level
             let lane = self.fast_lanes.lane(level);
             // get the index in the lane that is the key or just less than the key
-            index = lane.find(key, level, index);
-            // check if the index contains the key
-            let node = unsafe { lane.inner().get_unchecked(index).as_ref() };
-            if node.key_matches(key) {
-                // if it does we can just return the item
-                // I don't like this, it makes me sad why must I transmute
-                // must I even transmute or am I just dumb
-                return Some(unsafe { std::mem::transmute(node.value()) });
+            let possible_index = lane.find(key, level, index);
+
+            if let Some(possible_index) = possible_index {
+                index = possible_index;
+
+                // check if the index contains the key
+                let node = unsafe { lane.inner().get_unchecked(index).as_ref() };
+                if node.key_matches(key) {
+                    // if it does we can just return the item
+                    // I don't like this, it makes me sad why must I transmute
+                    // must I even transmute or am I just dumb
+                    return Some(unsafe { std::mem::transmute(node.value()) });
+                }
             }
             // if not we are going to need to go to the next level
             // but we also need to skip some of the first elements in the next level since
@@ -383,14 +462,15 @@ where
         // this is just a repeat of the top logic
         let lane = self.fast_lanes.lane(0);
         let index = lane.find(key, 0, index);
-        let node = unsafe { lane.inner().get_unchecked(index).as_ref() };
+        let node = if let Some(index) = index {
+            unsafe { lane.inner().get_unchecked(index).as_ref() }
+        } else {
+            unsafe { self.data_list?.as_ref() }
+        };
 
         // the key was not found in the fast lanes so now we must iterate over the node list until the key is found or a larger is found in which case
         // it means the key does not exist
-        let node = node
-            .iter()
-            .take_while(|&item| key <= item.key().borrow())
-            .last()?;
+        let node = node.find(key)?;
 
         // now we need to check if the key was found
         if node.key_matches(key) {
@@ -404,19 +484,24 @@ where
     /// Returns the value previously associated with the key and replaces it with the new one if a previous exists.
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
         let mut index = 0;
-        for level in (0..LEVELS).rev() {
+        for level in (1..LEVELS).rev() {
             // get the lane that corresponding to that level
             let lane = self.fast_lanes.lane(level);
             // get the index in the lane that is the key or just less than the key
-            index = lane.find(&key, level, index);
-            // check if the index contains the key
-            let node = unsafe { lane.inner().get_unchecked(index) };
+            let possible_index = lane.find(&key, level, index);
 
-            // TODO: this worries me since this seems unsafe, I should maybe change this
-            let node = unsafe { &mut *node.as_ptr() };
-            if node.key_matches(&key) {
-                // if it does we can just update the item
-                return Some(node.item_mut().replace(value));
+            if let Some(possible_index) = possible_index {
+                index = possible_index;
+
+                // check if the index contains the key
+                let node = unsafe { lane.inner().get_unchecked(index) };
+
+                // TODO: this worries me since this seems unsafe, I should maybe change this
+                let node = unsafe { &mut *node.as_ptr() };
+                if node.key_matches(&key) {
+                    // if it does we can just update the item
+                    return Some(node.item_mut().replace(value));
+                }
             }
             // if not we are going to need to go to the next level
             // but we also need to skip some of the first elements in the next level since
@@ -426,16 +511,17 @@ where
         // this is just a repeat of the top logic
         let lane = self.fast_lanes.lane(0);
         let index = lane.find(&key, 0, index);
-        let node = unsafe { lane.inner().get_unchecked(index) };
-        // TODO: same as above todo
-        let node = unsafe { &mut *node.as_ptr() };
+        let node = if let Some(index) = index {
+            let node = unsafe { lane.inner().get_unchecked(index) };
+            // TODO: same as above todo
+            unsafe { &mut *node.as_ptr() }
+        } else {
+            unsafe { self.data_list?.as_mut() }
+        };
 
         // the key was not found in the fast lanes so now we must iterate over the node list until the key is found or a larger is found in which case
         // it means the key does not exist
-        let node = node
-            .iter_mut()
-            .take_while(|item| &key <= item.key().borrow())
-            .last();
+        let node = node.find_mut(&key);
 
         if let Some(node) = node {
             // if there is a node first check if they have the same key
@@ -457,5 +543,80 @@ where
             new_node.append(self.data_list);
             None
         }
+    }
+
+    /// Removes the key fromthe `SkipListMap` if it exists and returns the value associated with it.
+    pub fn remove<Q>(&mut self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        // first remove the element from every lane if it exists.
+        let prev_link = self.fast_lanes.remove(key);
+
+        // start searching from prev_link (if present) or head otherwise
+        let start = if let Some(prev) = prev_link {
+            prev
+        } else {
+            // if there is no previous link then start from head
+            self.data_list?
+        };
+
+        // previous starts as the link we were given; iterator will start at that node
+        let mut previous = start;
+
+        // iterate nodes starting at `start`, but skip the first (we want nodes after `previous`)
+        for node_ref in unsafe { start.as_ref() }.iter().skip(1) {
+            // If we found the key -> remove this node
+            if node_ref.key_matches(key) {
+                // node_ptr is NonNull<Node<K,V>> pointing to the node to remove
+                let node_ptr: Link<K, V> = node_ref.into();
+
+                // 1) Link previous -> node.next (unlink)
+                unsafe {
+                    previous.as_mut().next = node_ref.next;
+                }
+
+                // 2) Now reclaim ownership of the node's allocation and extract the value.
+                //
+                // We used ptr::read to move the Node out of heap memory into a stack value,
+                // then wrap it in ManuallyDrop so Drop does not run for that stack copy.
+                // Finally we extract the value V using ptr::read and deallocate the original
+                // heap allocation with the global allocator. This avoids double-drop.
+                let value = unsafe {
+                    let raw_ptr = node_ptr.as_ptr();
+
+                    // Move the Node out of the allocation (bitwise move, does not call drop).
+                    let node_moved: Node<K, V> = std::ptr::read(raw_ptr);
+                    let mut node_moved = std::mem::ManuallyDrop::new(node_moved);
+
+                    // Extract the value (move out) from the Item inside the node.
+                    // Using ptr::read to avoid running Drop for the moved-out field later.
+                    let val = std::ptr::read(&mut node_moved.item.value);
+
+                    // We've already unlinked the node from the list; the heap allocation
+                    // still needs to be deallocated. Because we used std::ptr::read to
+                    // create `node_moved` and then prevented its Drop, we must manually
+                    // deallocate the heap memory here.
+                    let layout = std::alloc::Layout::new::<Node<K, V>>();
+                    std::alloc::dealloc(raw_ptr as *mut u8, layout);
+
+                    val
+                };
+
+                self.len = self.len.saturating_sub(1);
+                return Some(value);
+            }
+
+            // early exit: if keys are ordered and we've passed the key, stop searching
+            if node_ref.key().borrow() > key {
+                break;
+            }
+
+            // advance previous to this node
+            previous = node_ref.into();
+        }
+
+        None
     }
 }
