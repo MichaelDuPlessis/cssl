@@ -1,4 +1,4 @@
-use std::{borrow::Borrow, fmt::Debug, marker::PhantomData, ops::Deref, ptr::NonNull};
+use std::{borrow::Borrow, fmt::Debug, marker::PhantomData, ptr::NonNull};
 
 /// The number of elements contained in each `Proxy`.
 const PROXY_SIZE: usize = 4;
