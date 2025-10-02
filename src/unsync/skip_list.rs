@@ -2,10 +2,17 @@ use std::{borrow::Borrow, fmt::Debug, marker::PhantomData, ptr::NonNull};
 
 /// The P value for the `SkipList`, this is how many elements are skipped going up levels of the fast lane.
 /// This will be known as the skipping factor
-const P: usize = 4;
+const P: usize = 2;
 
 /// The number of fastlane levels in the `SkipList`.
 const LEVELS: usize = 2;
+
+/// Calculates the lane start given the total number of elements in the fast lanes combined, the P value and lane level.
+/// The level is 0 indexed.
+// TODO: Add derivation for calculation
+fn lane_start(len: usize, p: usize, level: usize) -> usize {
+    (len * (p.pow(level as u32) - 1)) / (p.pow(level as u32 + 1) * (p - 1))
+}
 
 /// An key: value pair stored in the `SkipListMap`.
 struct Item<K, V> {
@@ -276,37 +283,13 @@ impl<K, V> FastLanes<K, V> {
         (self.lanes.len() + level_power - 1) / level_power
     }
 
-    /// Calculates the start index of a specific level
-    /// Compute S(k) = sum_{i=1..k} (N + P^i - 1) / P^i
-    ///
-    /// Derivation:
-    ///   (N + P^i - 1) / P^i
-    /// = N / P^i + (P^i / P^i) - (1 / P^i)
-    /// = 1 + (N - 1) / P^i
-    ///
-    /// So:
-    ///   S(k) = sum_{i=1..k} [ 1 + (N - 1) / P^i ]
-    ///        = k + (N - 1) * sum_{i=1..k} (1 / P^i)
-    ///
-    /// The inner sum is a finite geometric series:
-    ///   sum_{i=1..k} 1/P^i = (1 - P^(-k)) / (P - 1)
-    ///
-    /// Multiply top and bottom by P^k to make it integer-friendly:
-    ///   (1 - P^(-k)) / (P - 1)
-    /// = (P^k - 1) / (P^k * (P - 1))
-    ///
-    /// Final formula:
-    ///   S(k) = k + (N - 1) * (P^k - 1) / (P^k * (P - 1))
-    ///
-    /// Special case: if P = 1, then each term = N, so S(k) = k * N.
     fn lane_start(&self, level: usize) -> usize {
         // The start of a level is the sum of the lengths of the previous levels
         // taking the formula for the level_len summing it an simplifying leads to an
         // equation with no loops, aint that cool
         // remember we start 0 indexed
 
-        let pk = P.pow(level as u32);
-        level + (self.lanes.len() - 1) * ((pk - 1) / P - 1)
+        lane_start(self.lanes.len(), P, level)
     }
 
     /// Retrieve a reference to the fast lane located on the nth level.
@@ -429,9 +412,19 @@ impl<K, V> SkipListMap<K, V> {
     /// Builds the fast lanes from the data list.
     fn build_fast_lanes(&mut self) {
         // first calculate the needed size for the fast lanes
-        let len = (self.len() * (P.pow(LEVELS as u32) - 1)) / (P.pow(LEVELS as u32 - 1) * (P - 1));
+        let pn = P.pow(LEVELS as u32);
+        let len = (self.len() * (pn - 1)) / (P.pow(LEVELS as u32 + 1) - pn);
         let mut lanes: Vec<Link<K, V>> = Vec::with_capacity(len);
+        // set the len so we can just index and assign anywhere
         unsafe { lanes.set_len(len) };
+
+        // calculating lane offsets
+        // TODO: This is essentially a copy of the code from the FastLane struct and should be extracted out
+        let mut offsets = [0; LEVELS];
+        for level in 0..LEVELS {
+            let offset = lane_start(len, P, level);
+            offsets[level] = offset;
+        }
 
         if let Some(link) = self.data_list {
             let node = unsafe { link.as_ref() };
@@ -439,7 +432,8 @@ impl<K, V> SkipListMap<K, V> {
             for (i, node) in node.iter().step_by(P).enumerate() {
                 for level in 1..=LEVELS {
                     if i % level == 0 {
-                        lanes[i * P.pow(level as u32)] = node.into();
+                        let index = (i / level) + offsets[level - 1];
+                        lanes[index] = node.into();
                     }
                 }
             }
@@ -756,5 +750,10 @@ mod tests {
         }
 
         map.build_fast_lanes();
+
+        assert_eq!(map.get(&8), Some(&8));
+        assert_eq!(map.get(&31), Some(&31));
+        assert_eq!(map.get(&12), Some(&12));
+        assert_eq!(map.get(&32), None);
     }
 }
