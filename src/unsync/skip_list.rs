@@ -10,7 +10,7 @@ const LEVELS: usize = 2;
 /// Calculates the lane start given the total number of elements in the fast lanes combined, the P value and lane level.
 /// The level is 0 indexed.
 // TODO: Add derivation for calculation
-fn lane_start(total_elements: usize, p: usize, level: usize) -> usize {
+fn lane_start(p: usize, level: usize, total_elements: usize) -> usize {
     if level == LEVELS - 1 {
         return 0;
     }
@@ -269,7 +269,7 @@ impl<'a, K, V> Lane<'a, K, V> {
             .iter()
             .skip(prev_index * P.pow(level as u32 + 1))
             .map(|link| unsafe { link.as_ref() })
-            .take_while(|&node| key > node.key().borrow())
+            .take_while(|&node| key >= node.key().borrow())
             .count();
 
         index.checked_sub(1)
@@ -299,13 +299,13 @@ impl<K, V> FastLanes<K, V> {
         lane_len(level, total_elements)
     }
 
-    fn lane_start(&self, level: usize) -> usize {
+    fn lane_start(&self, level: usize, total_elements: usize) -> usize {
         // The start of a level is the sum of the lengths of the previous levels
         // taking the formula for the level_len summing it an simplifying leads to an
         // equation with no loops, aint that cool
         // remember we start 0 indexed
 
-        lane_start(self.lanes.len(), P, level)
+        lane_start(P, level, total_elements)
     }
 
     /// Retrieve a reference to the fast lane located on the nth level.
@@ -320,9 +320,9 @@ impl<K, V> FastLanes<K, V> {
         let num_elements = self.lane_len(level, total_elements);
 
         // 2. find the start of the level
-        let level_start = self.lane_start(level);
+        let lane_start = self.lane_start(level, total_elements);
 
-        Lane::new(&self.lanes[level_start..level_start + num_elements])
+        Lane::new(&self.lanes[lane_start..lane_start + num_elements])
     }
 
     /// Remove the specified key from all lanes and returns a link to the `Node` just before the remove key.
@@ -337,9 +337,9 @@ impl<K, V> FastLanes<K, V> {
 
         if let Some(index) = index {
             // first check if the index found matches the key
-            let link = unsafe { lane.inner().get_unchecked(index) };
+            let link = *unsafe { lane.inner().get_unchecked(index) };
             if unsafe { link.as_ref().key_matches(key) } {
-                let abs_index = self.lane_start(0) + index;
+                let abs_index = self.lane_start(0, total_elements) + index;
                 if index < lane.len() - 1 {
                     // check if the lane is long enough to copy next element
                     self.lanes[abs_index] = self.lanes[abs_index + 1];
@@ -349,17 +349,16 @@ impl<K, V> FastLanes<K, V> {
                 }
 
                 // if the key is in the lowest lane it can exist in a higher lane
-                let mut index = index;
                 for level in 1..LEVELS {
-                    index = index / P;
-                    let lane = self.lane(0, total_elements);
+                    let lane = self.lane(level, total_elements);
 
-                    let index = lane.find(key, level, index);
+                    // TODO: Since the index of the lower element is known we can skip ahead here
+                    let index = lane.find(key, level, 0);
                     if let Some(index) = index {
                         // first check if the index found matches the key
                         let link = unsafe { lane.inner().get_unchecked(index) };
                         if unsafe { link.as_ref().key_matches(key) } {
-                            let abs_index = self.lane_start(level) + index;
+                            let abs_index = self.lane_start(level, total_elements) + index;
                             if index < lane.len() - 1 {
                                 // check if the lane is long enough to copy next element
                                 self.lanes[abs_index] = self.lanes[abs_index + 1];
@@ -371,7 +370,7 @@ impl<K, V> FastLanes<K, V> {
                     }
                 }
 
-                self.lanes.get(index.checked_sub(1)?).copied()
+                self.lanes.get(abs_index.checked_sub(1)?).copied()
             } else {
                 // this is a link before the one we are looking for
                 Some(unsafe { *lane.inner().get_unchecked(index) })
@@ -445,7 +444,7 @@ impl<K, V> SkipListMap<K, V> {
         // TODO: This is essentially a copy of the code from the FastLane struct and should be extracted out
         let mut offsets = [0; LEVELS];
         for level in 0..LEVELS {
-            let offset = lane_start(self.len(), P, level);
+            let offset = lane_start(P, level, self.len());
             offsets[level] = offset;
         }
 
@@ -532,11 +531,7 @@ where
 
     /// Insert a key value pair into the `SkipListMap`.
     /// Returns the value previously associated with the key and replaces it with the new one if a previous exists.
-    pub fn insert(&mut self, key: K, value: V) -> Option<V>
-    where
-        K: Debug,
-        V: Debug,
-    {
+    pub fn insert(&mut self, key: K, value: V) -> Option<V> {
         let mut index = 0;
         for level in (1..LEVELS).rev() {
             // get the lane that corresponding to that level
@@ -820,32 +815,20 @@ mod tests {
         }
 
         map.build_fast_lanes();
-        for link in map.fast_lanes.lanes.iter() {
-            println!("Fast lane link: {:?}", unsafe { link.as_ref() }.item);
-        }
 
         assert_eq!(map.get(&8), Some(&8));
         assert_eq!(map.get(&31), Some(&31));
         assert_eq!(map.get(&12), Some(&12));
         assert_eq!(map.get(&32), None);
 
-        println!("========================================");
         assert_eq!(map.remove(&8), Some(8));
-        for link in map.fast_lanes.lanes.iter() {
-            println!("Fast lane link: {:?}", unsafe { link.as_ref() }.item);
+
+        assert_eq!(map.get(&8), None);
+        assert_eq!(None, map.insert(8, 8));
+
+        for i in 0..NUM_VALUES {
+            assert_eq!(Some(i), map.insert(i, i + 1));
         }
-
-        // assert_eq!(map.get(&8), None);
-        // println!("Inserting 8");
-        // assert_eq!(None, map.insert(8, 8));
-
-        // for (k, v) in map.iter() {
-        //     println!("key: {k}, value: {v}");
-        // }
-
-        // for i in 0..NUM_VALUES {
-        //     assert_eq!(Some(i), map.insert(i, i + 1));
-        // }
-        // assert_eq!(map.get(&12), Some(&13));
+        assert_eq!(map.get(&12), Some(&13));
     }
 }
