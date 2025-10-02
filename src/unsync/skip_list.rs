@@ -10,8 +10,19 @@ const LEVELS: usize = 2;
 /// Calculates the lane start given the total number of elements in the fast lanes combined, the P value and lane level.
 /// The level is 0 indexed.
 // TODO: Add derivation for calculation
-fn lane_start(len: usize, p: usize, level: usize) -> usize {
-    (len * (p.pow(level as u32) - 1)) / (p.pow(level as u32 + 1) * (p - 1))
+fn lane_start(total_elements: usize, p: usize, level: usize) -> usize {
+    if level == LEVELS - 1 {
+        return 0;
+    }
+
+    let level = level as u32 + 1;
+    (total_elements * (p.pow(level) - 1)) / (p.pow(level + 1) * (p - 1))
+}
+
+/// Calculates the total number of elements in a lane.
+fn lane_len(level: usize, total_elements: usize) -> usize {
+    // remember we start 0 indexed
+    total_elements / P.pow(level as u32 + 1)
 }
 
 /// An key: value pair stored in the `SkipListMap`.
@@ -75,8 +86,10 @@ impl<K, V> Node<K, V> {
     }
 
     /// Appends a `Node` to self.
-    fn append(&mut self, node: impl Into<Option<Link<K, V>>>) {
-        self.next = node.into();
+    fn append(&mut self, link: impl Into<Link<K, V>>) {
+        let mut link = link.into();
+        unsafe { link.as_mut() }.next = self.next;
+        self.next = Some(link);
     }
 
     /// Get a reference to the item.
@@ -155,6 +168,12 @@ impl<K, V> Node<K, V> {
 impl<K, V> From<Node<K, V>> for Option<Link<K, V>> {
     fn from(value: Node<K, V>) -> Self {
         Some(unsafe { NonNull::new_unchecked(Box::into_raw(Box::new(value))) })
+    }
+}
+
+impl<K, V> From<Node<K, V>> for Link<K, V> {
+    fn from(value: Node<K, V>) -> Self {
+        unsafe { NonNull::new_unchecked(Box::into_raw(Box::new(value))) }
     }
 }
 
@@ -248,9 +267,9 @@ impl<'a, K, V> Lane<'a, K, V> {
         let index = self
             .lane
             .iter()
-            .skip(prev_index * P.pow(level as u32))
+            .skip(prev_index * P.pow(level as u32 + 1))
             .map(|link| unsafe { link.as_ref() })
-            .take_while(|&node| key <= node.key().borrow())
+            .take_while(|&node| key > node.key().borrow())
             .count();
 
         index.checked_sub(1)
@@ -276,11 +295,8 @@ impl<K, V> FastLanes<K, V> {
 
     /// Calculates the number of elements at a specific level.
     /// The formula is as follows ceil(Total Elements / ((Skipping Factor) ^ Level))
-    fn lane_len(&self, level: usize) -> usize {
-        // remember we start 0 indexed
-        let level_power = P.pow(level as u32 + 1);
-        // This is a cheap way to perform ceiling operations on integers
-        (self.lanes.len() + level_power - 1) / level_power
+    fn lane_len(&self, level: usize, total_elements: usize) -> usize {
+        lane_len(level, total_elements)
     }
 
     fn lane_start(&self, level: usize) -> usize {
@@ -293,7 +309,7 @@ impl<K, V> FastLanes<K, V> {
     }
 
     /// Retrieve a reference to the fast lane located on the nth level.
-    fn lane(&self, level: usize) -> Lane<'_, K, V> {
+    fn lane(&self, level: usize, total_elements: usize) -> Lane<'_, K, V> {
         if self.lanes.is_empty() {
             return Lane::new(&[]);
         }
@@ -301,7 +317,7 @@ impl<K, V> FastLanes<K, V> {
         // if it is the highest level we start at
         // Calculating the beginning and end of the level
         // 1. calculate the number of elements in the level
-        let num_elements = self.lane_len(level);
+        let num_elements = self.lane_len(level, total_elements);
 
         // 2. find the start of the level
         let level_start = self.lane_start(level);
@@ -310,47 +326,54 @@ impl<K, V> FastLanes<K, V> {
     }
 
     /// Remove the specified key from all lanes and returns a link to the `Node` just before the remove key.
-    fn remove<Q>(&mut self, key: &Q) -> Option<Link<K, V>>
+    fn remove<Q>(&mut self, key: &Q, total_elements: usize) -> Option<Link<K, V>>
     where
         K: Borrow<Q> + Ord,
         Q: Ord + ?Sized,
     {
         // get the previous element for lane 0 as if there isn't one the upper lanes will also not have one
-        let lane = self.lane(0);
+        let lane = self.lane(0, total_elements);
         let index = lane.find(key, 0, 0);
 
         if let Some(index) = index {
             // first check if the index found matches the key
             let link = unsafe { lane.inner().get_unchecked(index) };
             if unsafe { link.as_ref().key_matches(key) } {
-                let link = Some(unsafe { *lane.inner().get_unchecked(index.checked_sub(1)?) });
-
                 let abs_index = self.lane_start(0) + index;
-                if self.lanes.len() > abs_index {
-                    // check if the lane is long enought to copy next element
+                if index < lane.len() - 1 {
+                    // check if the lane is long enough to copy next element
                     self.lanes[abs_index] = self.lanes[abs_index + 1];
                 } else {
-                    // if we are at the end we can just pop from the back
-                    self.lanes.pop();
+                    // if we are at the end we must copy from the other way
+                    self.lanes[abs_index] = self.lanes[abs_index - 1];
                 }
 
-                // if the key is in the lowest lane it must exist in the higher lanes
+                // if the key is in the lowest lane it can exist in a higher lane
                 let mut index = index;
                 for level in 1..LEVELS {
                     index = index / P;
+                    let lane = self.lane(0, total_elements);
 
-                    let abs_index = self.lane_start(level) + index;
-                    if self.lanes.len() > abs_index {
-                        // check if the lane is long enought to copy next element
-                        self.lanes[abs_index] = self.lanes[abs_index + 1];
-                    } else {
-                        // if we are at the end we can just pop from the back
-                        self.lanes.pop();
+                    let index = lane.find(key, level, index);
+                    if let Some(index) = index {
+                        // first check if the index found matches the key
+                        let link = unsafe { lane.inner().get_unchecked(index) };
+                        if unsafe { link.as_ref().key_matches(key) } {
+                            let abs_index = self.lane_start(level) + index;
+                            if index < lane.len() - 1 {
+                                // check if the lane is long enough to copy next element
+                                self.lanes[abs_index] = self.lanes[abs_index + 1];
+                            } else {
+                                // if we are at the end we must copy from the other way
+                                self.lanes[abs_index] = self.lanes[abs_index - 1];
+                            }
+                        }
                     }
                 }
 
-                link
+                self.lanes.get(index.checked_sub(1)?).copied()
             } else {
+                // this is a link before the one we are looking for
                 Some(unsafe { *lane.inner().get_unchecked(index) })
             }
         } else {
@@ -422,17 +445,18 @@ impl<K, V> SkipListMap<K, V> {
         // TODO: This is essentially a copy of the code from the FastLane struct and should be extracted out
         let mut offsets = [0; LEVELS];
         for level in 0..LEVELS {
-            let offset = lane_start(len, P, level);
+            let offset = lane_start(self.len(), P, level);
             offsets[level] = offset;
         }
 
         if let Some(link) = self.data_list {
             let node = unsafe { link.as_ref() };
 
-            for (i, node) in node.iter().step_by(P).enumerate() {
+            for (i, node) in node.iter().enumerate() {
                 for level in 1..=LEVELS {
-                    if i % level == 0 {
-                        let index = (i / level) + offsets[level - 1];
+                    let p = P.pow(level as u32);
+                    if i % p == 0 {
+                        let index = i / p + offsets[level - 1];
                         lanes[index] = node.into();
                     }
                 }
@@ -464,7 +488,7 @@ where
         let mut index = 0;
         for level in (1..LEVELS).rev() {
             // get the lane that corresponding to that level
-            let lane = self.fast_lanes.lane(level);
+            let lane = self.fast_lanes.lane(level, self.len());
             // get the index in the lane that is the key or just less than the key
             let possible_index = lane.find(key, level, index);
 
@@ -486,7 +510,7 @@ where
         }
 
         // this is just a repeat of the top logic
-        let lane = self.fast_lanes.lane(0);
+        let lane = self.fast_lanes.lane(0, self.len());
         let index = lane.find(key, 0, index);
         let node = if let Some(index) = index {
             unsafe { lane.inner().get_unchecked(index).as_ref() }
@@ -508,11 +532,15 @@ where
 
     /// Insert a key value pair into the `SkipListMap`.
     /// Returns the value previously associated with the key and replaces it with the new one if a previous exists.
-    pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+    pub fn insert(&mut self, key: K, value: V) -> Option<V>
+    where
+        K: Debug,
+        V: Debug,
+    {
         let mut index = 0;
         for level in (1..LEVELS).rev() {
             // get the lane that corresponding to that level
-            let lane = self.fast_lanes.lane(level);
+            let lane = self.fast_lanes.lane(level, self.len());
             // get the index in the lane that is the key or just less than the key
             let possible_index = lane.find(&key, level, index);
 
@@ -535,7 +563,7 @@ where
         }
 
         // this is just a repeat of the top logic
-        let lane = self.fast_lanes.lane(0);
+        let lane = self.fast_lanes.lane(0, self.len());
         let index = lane.find(&key, 0, index);
         let node = if let Some(index) = index {
             let node = unsafe { lane.inner().get_unchecked(index) };
@@ -573,7 +601,9 @@ where
             // if there is no node it means this node belongs in the front of the linked list
             // I think at least still need to properly think about this and confirm it
             let mut new_node = Node::new(key, value);
-            new_node.append(self.data_list);
+            if let Some(link) = self.data_list {
+                new_node.append(link);
+            }
             self.data_list = new_node.into();
             None
         }
@@ -586,7 +616,7 @@ where
         Q: Ord + ?Sized,
     {
         // first remove the element from every lane if it exists.
-        let prev_link = self.fast_lanes.remove(key);
+        let prev_link = self.fast_lanes.remove(key, self.len());
 
         // start searching from prev_link (if present) or head otherwise
         let start = if let Some(prev) = prev_link {
@@ -595,6 +625,46 @@ where
             // if there is no previous link then start from head
             self.data_list?
         };
+
+        // check if head node contains the value
+        let head = unsafe { start.as_ref() };
+        if prev_link.is_none() && head.key_matches(key) {
+            // node_ptr is NonNull<Node<K,V>> pointing to the node to remove
+            let node_ptr: Link<K, V> = head.into();
+
+            // 1) Link previous -> node.next (unlink)
+            self.data_list = head.next();
+
+            // 2) Now reclaim ownership of the node's allocation and extract the value.
+            //
+            // We used ptr::read to move the Node out of heap memory into a stack value,
+            // then wrap it in ManuallyDrop so Drop does not run for that stack copy.
+            // Finally we extract the value V using ptr::read and deallocate the original
+            // heap allocation with the global allocator. This avoids double-drop.
+            let value = unsafe {
+                let raw_ptr = node_ptr.as_ptr();
+
+                // Move the Node out of the allocation (bitwise move, does not call drop).
+                let node_moved: Node<K, V> = std::ptr::read(raw_ptr);
+                let mut node_moved = std::mem::ManuallyDrop::new(node_moved);
+
+                // Extract the value (move out) from the Item inside the node.
+                // Using ptr::read to avoid running Drop for the moved-out field later.
+                let val = std::ptr::read(&mut node_moved.item.value);
+
+                // We've already unlinked the node from the list; the heap allocation
+                // still needs to be deallocated. Because we used std::ptr::read to
+                // create `node_moved` and then prevented its Drop, we must manually
+                // deallocate the heap memory here.
+                let layout = std::alloc::Layout::new::<Node<K, V>>();
+                std::alloc::dealloc(raw_ptr as *mut u8, layout);
+
+                val
+            };
+
+            self.len -= 1;
+            return Some(value);
+        }
 
         // previous starts as the link we were given; iterator will start at that node
         let mut previous = start;
@@ -750,10 +820,32 @@ mod tests {
         }
 
         map.build_fast_lanes();
+        for link in map.fast_lanes.lanes.iter() {
+            println!("Fast lane link: {:?}", unsafe { link.as_ref() }.item);
+        }
 
         assert_eq!(map.get(&8), Some(&8));
         assert_eq!(map.get(&31), Some(&31));
         assert_eq!(map.get(&12), Some(&12));
         assert_eq!(map.get(&32), None);
+
+        println!("========================================");
+        assert_eq!(map.remove(&8), Some(8));
+        for link in map.fast_lanes.lanes.iter() {
+            println!("Fast lane link: {:?}", unsafe { link.as_ref() }.item);
+        }
+
+        // assert_eq!(map.get(&8), None);
+        // println!("Inserting 8");
+        // assert_eq!(None, map.insert(8, 8));
+
+        // for (k, v) in map.iter() {
+        //     println!("key: {k}, value: {v}");
+        // }
+
+        // for i in 0..NUM_VALUES {
+        //     assert_eq!(Some(i), map.insert(i, i + 1));
+        // }
+        // assert_eq!(map.get(&12), Some(&13));
     }
 }
