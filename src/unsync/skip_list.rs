@@ -720,6 +720,16 @@ where
     }
 }
 
+impl<K, V> Drop for SkipListMap<K, V> {
+    fn drop(&mut self) {
+        let mut current = self.data_list;
+        while let Some(mut cur) = current {
+            current = unsafe { cur.as_ref().next() };
+            unsafe { std::ptr::drop_in_place(cur.as_mut()) };
+        }
+    }
+}
+
 // TODO: I think this is unnecessary since we can just use Node iter
 /// Immutabale iterator for `LinkedList`.
 pub struct Iter<'a, K: 'a, V: 'a> {
@@ -830,5 +840,7 @@ mod tests {
             assert_eq!(Some(i), map.insert(i, i + 1));
         }
         assert_eq!(map.get(&12), Some(&13));
+
+        // TODO: remove does not work if there is only one element in the lane
     }
 }
