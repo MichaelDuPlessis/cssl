@@ -543,10 +543,10 @@ where
                 index = possible_index;
 
                 // check if the index contains the key
-                let node = unsafe { lane.inner().get_unchecked(index) };
+                let mut node = *unsafe { lane.inner().get_unchecked(index) };
 
                 // TODO: this worries me since this seems unsafe, I should maybe change this
-                let node = unsafe { &mut *node.as_ptr() };
+                let node = unsafe { node.as_mut() };
                 if node.key_matches(&key) {
                     // if it does we can just update the item
                     return Some(node.item_mut().replace(value));
@@ -561,9 +561,9 @@ where
         let lane = self.fast_lanes.lane(0, self.len());
         let index = lane.find(&key, 0, index);
         let node = if let Some(index) = index {
-            let node = unsafe { lane.inner().get_unchecked(index) };
+            let mut node = *unsafe { lane.inner().get_unchecked(index) };
             // TODO: same as above todo
-            unsafe { &mut *node.as_ptr() }
+            unsafe { node.as_mut() }
         } else {
             if let Some(mut link) = self.data_list {
                 unsafe { link.as_mut() }
@@ -614,7 +614,7 @@ where
         let prev_link = self.fast_lanes.remove(key, self.len());
 
         // start searching from prev_link (if present) or head otherwise
-        let start = if let Some(prev) = prev_link {
+        let mut start = if let Some(prev) = prev_link {
             prev
         } else {
             // if there is no previous link then start from head
@@ -665,7 +665,7 @@ where
         let mut previous = start;
 
         // iterate nodes starting at `start`, but skip the first (we want nodes after `previous`)
-        for node_ref in unsafe { start.as_ref() }.iter().skip(1) {
+        for node_ref in unsafe { start.as_mut() }.iter_mut().skip(1) {
             // If we found the key -> remove this node
             if node_ref.key_matches(key) {
                 // node_ptr is NonNull<Node<K,V>> pointing to the node to remove
@@ -723,9 +723,11 @@ where
 impl<K, V> Drop for SkipListMap<K, V> {
     fn drop(&mut self) {
         let mut current = self.data_list;
-        while let Some(mut cur) = current {
-            current = unsafe { cur.as_ref().next() };
-            unsafe { std::ptr::drop_in_place(cur.as_mut()) };
+        while let Some(cur) = current {
+            unsafe {
+                let node = Box::from_raw(cur.as_ptr());
+                current = node.next;
+            }
         }
     }
 }
