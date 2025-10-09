@@ -1,26 +1,19 @@
 use std::{borrow::Borrow, fmt::Debug, marker::PhantomData, ptr::NonNull};
 
-/// The P value for the `SkipList`, this is how many elements are skipped going up levels of the fast lane.
-/// This will be known as the skipping factor
-const P: usize = 2;
-
-/// The number of fastlane levels in the `SkipList`.
-const LEVELS: usize = 2;
-
 /// Calculates the lane start given the total number of elements in the fast lanes combined, the P value and lane level.
 /// The level is 0 indexed.
 // TODO: Add derivation for calculation
-fn lane_start(level: usize, total_elements: usize) -> usize {
+fn lane_start(level: u8, levels: u8, p: u8, total_elements: usize) -> usize {
     // TODO: This can be transformed from a loop to a single sum
-    (level + 1..LEVELS)
-        .map(|l| lane_len(l, total_elements))
+    (level + 1..levels)
+        .map(|l| lane_len(l, p, total_elements))
         .sum()
 }
 
 /// Calculates the total number of elements in a lane.
-fn lane_len(level: usize, total_elements: usize) -> usize {
+fn lane_len(level: u8, p: u8, total_elements: usize) -> usize {
     // remember we start 0 indexed
-    let pl = P.pow(level as u32 + 1);
+    let pl = p.pow(level as u32 + 1) as usize;
     (total_elements + pl - 1) / pl
 }
 
@@ -266,7 +259,7 @@ impl<'a, K, V> Lane<'a, K, V> {
     /// It is assumed the `Lane` is sorted in ascending order.
     /// It requires the level as well as the previous index so that it knows how far to skip. It needs to skip some elements
     /// based on the result from the previous level searched
-    fn find<Q>(&self, key: &Q, level: usize, prev_index: usize) -> Option<usize>
+    fn find<Q>(&self, key: &Q, level: u8, p: u8, prev_index: usize) -> Option<usize>
     where
         Q: Ord + ?Sized,
         K: Ord + Borrow<Q>,
@@ -275,7 +268,7 @@ impl<'a, K, V> Lane<'a, K, V> {
         let index = self
             .lane
             .iter()
-            .skip(prev_index * P.pow(level as u32 + 1))
+            .skip(prev_index * p.pow(level as u32 + 1) as usize)
             .map(|link| unsafe { link.as_ref() })
             .take_while(|&node| key >= node.key().borrow())
             .count();
@@ -298,32 +291,38 @@ impl<'a, K, V> Debug for Lane<'a, K, V> {
 
 /// Is all the fast lanes used in the `SkipListMap`.
 struct FastLanes<K, V> {
+    /// The number of levels
+    levels: u8,
+    /// The fast lanes
     lanes: Vec<Link<K, V>>,
 }
 
 impl<K, V> FastLanes<K, V> {
     /// Create a new empty set of `Lanes`.
-    fn new() -> Self {
-        Self { lanes: Vec::new() }
+    fn new(levels: u8) -> Self {
+        Self {
+            levels,
+            lanes: Vec::new(),
+        }
     }
 
     /// Calculates the number of elements at a specific level.
     /// The formula is as follows ceil(Total Elements / ((Skipping Factor) ^ Level))
-    fn lane_len(&self, level: usize, total_elements: usize) -> usize {
-        lane_len(level, total_elements)
+    fn lane_len(&self, level: u8, p: u8, total_elements: usize) -> usize {
+        lane_len(level, p, total_elements)
     }
 
-    fn lane_start(&self, level: usize, total_elements: usize) -> usize {
+    fn lane_start(&self, level: u8, levels: u8, p: u8, total_elements: usize) -> usize {
         // The start of a level is the sum of the lengths of the previous levels
         // taking the formula for the level_len summing it an simplifying leads to an
         // equation with no loops, aint that cool
         // remember we start 0 indexed
 
-        lane_start(level, total_elements)
+        lane_start(level, levels, p, total_elements)
     }
 
     /// Retrieve a reference to the fast lane located on the nth level.
-    fn lane(&self, level: usize, total_elements: usize) -> Lane<'_, K, V> {
+    fn lane(&self, level: u8, levels: u8, p: u8, total_elements: usize) -> Lane<'_, K, V> {
         if self.lanes.is_empty() {
             return Lane::new(&[]);
         }
@@ -331,22 +330,22 @@ impl<K, V> FastLanes<K, V> {
         // if it is the highest level we start at
         // Calculating the beginning and end of the level
         // 1. calculate the number of elements in the level
-        let num_elements = self.lane_len(level, total_elements);
+        let num_elements = self.lane_len(level, p, total_elements);
 
         // 2. find the start of the level
-        let lane_start = self.lane_start(level, total_elements);
+        let lane_start = self.lane_start(level, levels, p, total_elements);
 
         Lane::new(&self.lanes[lane_start..lane_start + num_elements])
     }
 
     /// Remove the specified key from all lanes and returns a link to the `Node` just before the remove key.
-    fn remove<Q>(&mut self, key: &Q, total_elements: usize) -> Option<Link<K, V>>
+    fn remove<Q>(&mut self, key: &Q, levels: u8, p: u8, total_elements: usize) -> Option<Link<K, V>>
     where
         K: Borrow<Q> + Ord,
         Q: Ord + ?Sized,
     {
-        let lane = self.lane(0, total_elements);
-        let index = lane.find(key, 0, 0)?;
+        let lane = self.lane(0, levels, p, total_elements);
+        let index = lane.find(key, 0, p, 0)?;
 
         let link = *unsafe { lane.inner().get_unchecked(index) };
         if !unsafe { link.as_ref().key_matches(key) } {
@@ -361,7 +360,7 @@ impl<K, V> FastLanes<K, V> {
         let lane_len = lane.len();
 
         // Update level 0
-        let abs_index = self.lane_start(0, total_elements) + index;
+        let abs_index = self.lane_start(0, levels, p, total_elements) + index;
         if lane_len == 1 {
             self.lanes[abs_index] = link;
         } else if index < lane_len - 1 {
@@ -371,17 +370,18 @@ impl<K, V> FastLanes<K, V> {
         }
 
         // Update higher levels
-        for level in 1..LEVELS {
-            let lane = self.lane(level, total_elements);
-            if let Some(level_index) = lane.find(key, level, 0) {
+        for level in 1..levels {
+            let lane = self.lane(level, levels, p, total_elements);
+            if let Some(level_index) = lane.find(key, level, p, 0) {
                 let level_link = unsafe { lane.inner().get_unchecked(level_index) };
                 if unsafe { level_link.as_ref().key_matches(key) } {
-                    let level_abs_index = self.lane_start(level, total_elements) + level_index;
+                    let level_abs_index =
+                        self.lane_start(level, levels, p, total_elements) + level_index;
                     let level_lane_len = lane.len();
 
                     if level_lane_len == 1 {
                         // Use element from lower lane
-                        let lower_start = self.lane_start(level - 1, total_elements);
+                        let lower_start = self.lane_start(level - 1, levels, p, total_elements);
                         self.lanes[level_abs_index] = self.lanes[lower_start];
                     } else if level_index < level_lane_len - 1 {
                         self.lanes[level_abs_index] = self.lanes[level_abs_index + 1];
@@ -401,14 +401,14 @@ impl<K, V> FastLanes<K, V> {
 
     /// The number of fast lanes
     // TODO: Maybe change to a smaller size like u8 or u32
-    fn num_lanes(&self) -> usize {
-        LEVELS
+    fn num_lanes(&self) -> u8 {
+        self.levels
     }
 }
 
 impl<K, V> Default for FastLanes<K, V> {
     fn default() -> Self {
-        Self::new()
+        Self::new(2)
     }
 }
 
@@ -425,7 +425,7 @@ where
 }
 
 /// A Cache Sensitive Skip List
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct SkipListMap<K, V> {
     /// The fast lanes.
     fast_lanes: FastLanes<K, V>,
@@ -433,15 +433,19 @@ pub struct SkipListMap<K, V> {
     data_list: Option<Link<K, V>>,
     /// The number of elements in the `SkipListMap`.
     len: usize,
+    /// The P value for the `SkipList`, this is how many elements are skipped going up levels of the fast lane.
+    /// This will be known as the skipping factor
+    p: u8,
 }
 
 impl<K, V> SkipListMap<K, V> {
     /// Create a new `SkipListMap`.
-    pub fn new() -> Self {
+    pub fn new(p: u8, levels: u8) -> Self {
         Self {
-            fast_lanes: FastLanes::new(),
+            fast_lanes: FastLanes::new(levels),
             data_list: None,
             len: 0,
+            p,
         }
     }
 
@@ -455,43 +459,49 @@ impl<K, V> SkipListMap<K, V> {
         self.len == 0
     }
 
+    /// Return the number of fast lanes.
+    fn levels(&self) -> u8 {
+        self.fast_lanes.levels
+    }
+
     /// Builds the fast lanes from the data list.
     fn build_fast_lanes(&mut self) {
         // there is nothing to build if there are no elements
         if self.is_empty() {
             return;
         }
+        let levels = self.levels();
 
         // first calculate the needed size for the fast lanes
         // TODO: This can be done better no loops should be needed
-        let len = (0..LEVELS).map(|i| lane_len(i, self.len())).sum();
+        let len = (0..levels).map(|i| lane_len(i, self.p, self.len())).sum();
         let mut lanes: Vec<Link<K, V>> = Vec::with_capacity(len);
         // set the len so we can just index and assign anywhere
         unsafe { lanes.set_len(len) };
 
         // calculating lane offsets
         // TODO: This is essentially a copy of the code from the FastLane struct and should be extracted out
-        let mut offsets = [0; LEVELS];
-        for level in 0..LEVELS {
-            let offset = lane_start(level, self.len());
-            offsets[level] = offset;
+        let mut offsets = vec![0; levels as usize];
+        for level in 0..levels {
+            let offset = lane_start(level, levels, self.p, self.len());
+            offsets[level as usize] = offset;
         }
 
         if let Some(link) = self.data_list {
             let node = unsafe { link.as_ref() };
 
             for (i, node) in node.iter().enumerate() {
-                for level in 1..=LEVELS {
-                    let p = P.pow(level as u32);
+                for level in 1..=levels {
+                    let p = self.p.pow(level as u32) as usize;
                     if i % p == 0 {
-                        let index = i / p + offsets[level - 1];
+                        let index = i / p + offsets[level as usize - 1];
                         lanes[index] = node.into();
                     }
                 }
             }
         }
 
-        self.fast_lanes = FastLanes { lanes };
+        self.fast_lanes = FastLanes { levels, lanes };
     }
 
     /// Safely remove a node and extract its value
@@ -538,9 +548,10 @@ where
         let mut index = 0;
 
         // Search through fast lanes from highest to lowest level
-        for level in (1..LEVELS).rev() {
-            let lane = self.fast_lanes.lane(level, self.len());
-            if let Some(possible_index) = lane.find(key, level, index) {
+        let levels = self.levels();
+        for level in (1..levels).rev() {
+            let lane = self.fast_lanes.lane(level, levels, self.p, self.len());
+            if let Some(possible_index) = lane.find(key, level, self.p, index) {
                 index = possible_index;
                 let node = unsafe { lane.inner().get_unchecked(index).as_ref() };
                 if node.key_matches(key) {
@@ -550,8 +561,8 @@ where
         }
 
         // Search level 0
-        let lane = self.fast_lanes.lane(0, self.len());
-        if let Some(index) = lane.find(key, 0, index) {
+        let lane = self.fast_lanes.lane(0, levels, self.p, self.len());
+        if let Some(index) = lane.find(key, 0, self.p, index) {
             let node = *unsafe { lane.inner().get_unchecked(index) };
             Some(unsafe { node.as_ref() })
         } else {
@@ -568,9 +579,10 @@ where
         let mut index = 0;
 
         // Search through fast lanes from highest to lowest level
-        for level in (1..LEVELS).rev() {
-            let lane = self.fast_lanes.lane(level, self.len());
-            if let Some(possible_index) = lane.find(key, level, index) {
+        let levels = self.levels();
+        for level in (1..levels).rev() {
+            let lane = self.fast_lanes.lane(level, levels, self.p, self.len());
+            if let Some(possible_index) = lane.find(key, level, self.p, index) {
                 index = possible_index;
                 let mut node = *unsafe { lane.inner().get_unchecked(index) };
                 let node = unsafe { node.as_mut() };
@@ -581,8 +593,8 @@ where
         }
 
         // Search level 0
-        let lane = self.fast_lanes.lane(0, self.len());
-        if let Some(index) = lane.find(key, 0, index) {
+        let lane = self.fast_lanes.lane(0, levels, self.p, self.len());
+        if let Some(index) = lane.find(key, 0, self.p, index) {
             let mut node = *unsafe { lane.inner().get_unchecked(index) };
             Some(unsafe { node.as_mut() })
         } else {
@@ -655,7 +667,8 @@ where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        let prev_link = self.fast_lanes.remove(key, self.len());
+        let levels = self.levels();
+        let prev_link = self.fast_lanes.remove(key, levels, self.p, self.len());
         let mut start = prev_link.unwrap_or(self.data_list?);
 
         let head = unsafe { start.as_ref() };
@@ -685,6 +698,12 @@ where
         }
 
         None
+    }
+}
+
+impl<K, V> Default for SkipListMap<K, V> {
+    fn default() -> Self {
+        Self::new(2, 2)
     }
 }
 
