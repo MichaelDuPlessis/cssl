@@ -10,19 +10,18 @@ const LEVELS: usize = 2;
 /// Calculates the lane start given the total number of elements in the fast lanes combined, the P value and lane level.
 /// The level is 0 indexed.
 // TODO: Add derivation for calculation
-fn lane_start(p: usize, level: usize, total_elements: usize) -> usize {
-    if level == LEVELS - 1 {
-        return 0;
-    }
-
-    let level = level as u32 + 1;
-    (total_elements * (p.pow(level) - 1)) / (p.pow(level + 1) * (p - 1))
+fn lane_start(level: usize, total_elements: usize) -> usize {
+    // TODO: This can be transformed from a loop to a single sum
+    (level + 1..LEVELS)
+        .map(|l| lane_len(l, total_elements))
+        .sum()
 }
 
 /// Calculates the total number of elements in a lane.
 fn lane_len(level: usize, total_elements: usize) -> usize {
     // remember we start 0 indexed
-    total_elements / P.pow(level as u32 + 1)
+    let pl = P.pow(level as u32 + 1);
+    (total_elements + pl - 1) / pl
 }
 
 /// An key: value pair stored in the `SkipListMap`.
@@ -238,7 +237,6 @@ impl<'a, K, V> IntoIterator for &'a mut Node<K, V> {
 }
 
 /// A reference to a fast lane.
-#[derive(Debug)]
 struct Lane<'a, K, V> {
     lane: &'a [Link<K, V>],
 }
@@ -282,6 +280,12 @@ impl<'a, K, V> Lane<'a, K, V> {
     }
 }
 
+impl<'a, K, V> Debug for Lane<'a, K, V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Lane").field("lane", &self.lane).finish()
+    }
+}
+
 /// Is all the fast lanes used in the `SkipListMap`.
 struct FastLanes<K, V> {
     lanes: Vec<Link<K, V>>,
@@ -305,7 +309,7 @@ impl<K, V> FastLanes<K, V> {
         // equation with no loops, aint that cool
         // remember we start 0 indexed
 
-        lane_start(P, level, total_elements)
+        lane_start(level, total_elements)
     }
 
     /// Retrieve a reference to the fast lane located on the nth level.
@@ -339,8 +343,22 @@ impl<K, V> FastLanes<K, V> {
             // first check if the index found matches the key
             let link = *unsafe { lane.inner().get_unchecked(index) };
             if unsafe { link.as_ref().key_matches(key) } {
+                // if there is only one element in the lane it matched the key then replace it with the current head of the list if any
+                if lane.len() == 1 {
+                    if total_elements == 1 {
+                        // now if the total number of elements is one it means that we are removing the last element so lets just clear the fast lanes
+                        self.lanes.clear();
+                        return None;
+                    }
+
+                    // otherwise we can make the head next value of the list the new head
+                }
+
                 let abs_index = self.lane_start(0, total_elements) + index;
-                if index < lane.len() - 1 {
+                // TODO: Duplicate of above if statement
+                if lane.len() == 1 {
+                    self.lanes[abs_index] = link;
+                } else if index < lane.len() - 1 {
                     // check if the lane is long enough to copy next element
                     self.lanes[abs_index] = self.lanes[abs_index + 1];
                 } else {
@@ -359,6 +377,14 @@ impl<K, V> FastLanes<K, V> {
                         let link = unsafe { lane.inner().get_unchecked(index) };
                         if unsafe { link.as_ref().key_matches(key) } {
                             let abs_index = self.lane_start(level, total_elements) + index;
+                            if lane.len() == 1 {
+                                // if the lanes lenght is one then let just take the lane below its elements
+                                // since it has already been fixed
+                                let lower_lane = self.lane(level - 1, total_elements);
+                                self.lanes[abs_index] = lower_lane.lane[0];
+                                continue;
+                            }
+
                             if index < lane.len() - 1 {
                                 // check if the lane is long enough to copy next element
                                 self.lanes[abs_index] = self.lanes[abs_index + 1];
@@ -370,7 +396,11 @@ impl<K, V> FastLanes<K, V> {
                     }
                 }
 
-                self.lanes.get(abs_index.checked_sub(1)?).copied()
+                if index == 0 {
+                    None
+                } else {
+                    self.lanes.get(abs_index - 1).copied()
+                }
             } else {
                 // this is a link before the one we are looking for
                 Some(unsafe { *lane.inner().get_unchecked(index) })
@@ -431,11 +461,21 @@ impl<K, V> SkipListMap<K, V> {
         self.len
     }
 
+    /// Returns true if the skip list is empty otherwise false.
+    fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
     /// Builds the fast lanes from the data list.
     fn build_fast_lanes(&mut self) {
+        // there is nothing to build if there are no elements
+        if self.is_empty() {
+            return;
+        }
+
         // first calculate the needed size for the fast lanes
-        let pn = P.pow(LEVELS as u32);
-        let len = (self.len() * (pn - 1)) / (P.pow(LEVELS as u32 + 1) - pn);
+        // TODO: This can be done better no loops should be needed
+        let len = (0..LEVELS).map(|i| lane_len(i, self.len())).sum();
         let mut lanes: Vec<Link<K, V>> = Vec::with_capacity(len);
         // set the len so we can just index and assign anywhere
         unsafe { lanes.set_len(len) };
@@ -444,7 +484,7 @@ impl<K, V> SkipListMap<K, V> {
         // TODO: This is essentially a copy of the code from the FastLane struct and should be extracted out
         let mut offsets = [0; LEVELS];
         for level in 0..LEVELS {
-            let offset = lane_start(P, level, self.len());
+            let offset = lane_start(level, self.len());
             offsets[level] = offset;
         }
 
@@ -768,7 +808,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn basic_insertion_test() {
+    fn basic_insertion() {
         const NUM_VALUES: usize = 32;
 
         let mut map = SkipListMap::default();
@@ -795,7 +835,7 @@ mod tests {
     }
 
     #[test]
-    fn basic_deletion_test() {
+    fn basic_deletion() {
         const NUM_VALUES: usize = 32;
 
         let mut map = SkipListMap::default();
@@ -818,7 +858,7 @@ mod tests {
     }
 
     #[test]
-    fn fast_lane_test() {
+    fn fast_lane() {
         const NUM_VALUES: usize = 32;
 
         let mut map = SkipListMap::default();
@@ -842,7 +882,33 @@ mod tests {
             assert_eq!(Some(i), map.insert(i, i + 1));
         }
         assert_eq!(map.get(&12), Some(&13));
+    }
 
-        // TODO: remove does not work if there is only one element in the lane
+    #[test]
+    fn edge_cases() {
+        let mut map = SkipListMap::default();
+        assert_eq!(None, map.insert(0, 0));
+        map.build_fast_lanes();
+
+        // now there should only be two elements across all fast lanes
+        assert_eq!(map.fast_lanes.lanes.len(), 2);
+
+        // what happens if we removeit
+        map.remove(&0);
+
+        let mut map = SkipListMap::default();
+        assert_eq!(None, map.insert(0, 0));
+        assert_eq!(None, map.insert(1, 0));
+        assert_eq!(None, map.insert(2, 0));
+        map.build_fast_lanes();
+
+        assert_eq!(map.fast_lanes.lanes.len(), 3);
+
+        assert_eq!(Some(0), map.remove(&0));
+
+        assert_eq!(None, map.insert(0, 0));
+        assert_eq!(Some(&0), map.get(&0));
+        assert_eq!(Some(0), map.remove(&0));
+        assert_eq!(None, map.get(&0));
     }
 }
