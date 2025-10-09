@@ -46,6 +46,11 @@ impl<K, V> Item<K, V> {
         &self.value
     }
 
+    /// Retrieve mutable a reference to the value.
+    fn value_mut(&mut self) -> &mut V {
+        &mut self.value
+    }
+
     /// Replaces the current value with the passed in value and returns the old value.
     fn replace(&mut self, value: V) -> V {
         std::mem::replace(&mut self.value, value)
@@ -109,6 +114,11 @@ impl<K, V> Node<K, V> {
     /// Get a refernce to the value.
     fn value(&self) -> &V {
         self.item.value()
+    }
+
+    /// Get a mutable refernce to the value.
+    fn value_mut(&mut self) -> &mut V {
+        self.item.value_mut()
     }
 
     /// Checks if the passed in key matches the key of the Node.
@@ -512,6 +522,14 @@ impl<K, V> SkipListMap<K, V> {
             _marker: PhantomData,
         }
     }
+
+    /// Create an mutable iterator.
+    fn iter_mut(&mut self) -> IterMut<'_, K, V> {
+        IterMut {
+            current: self.data_list,
+            _marker: PhantomData,
+        }
+    }
 }
 
 impl<K, V> SkipListMap<K, V>
@@ -773,7 +791,7 @@ impl<K, V> Drop for SkipListMap<K, V> {
 }
 
 // TODO: I think this is unnecessary since we can just use Node iter
-/// Immutabale iterator for `LinkedList`.
+/// Immutabale iterator for `SkipListMap`.
 pub struct Iter<'a, K: 'a, V: 'a> {
     current: Option<Link<K, V>>,
     _marker: PhantomData<&'a Link<K, V>>,
@@ -800,6 +818,39 @@ impl<'a, K, V> IntoIterator for &'a SkipListMap<K, V> {
 
     fn into_iter(self) -> Self::IntoIter {
         self.iter()
+    }
+}
+
+/// Mutabale iterator for `SkipListMap`.
+pub struct IterMut<'a, K: 'a, V: 'a> {
+    current: Option<Link<K, V>>,
+    _marker: PhantomData<&'a Link<K, V>>,
+}
+
+impl<'a, K, V> Iterator for IterMut<'a, K, V> {
+    type Item = (&'a K, &'a mut V);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let link = self.current?; // copy out the link (Link<T> is Copy)
+        let node = link.as_ptr();
+
+        // Advance the iterator
+        self.current = (unsafe { &*node }).next;
+
+        Some((
+            (unsafe { &*node }).key(),
+            (unsafe { &mut *node }).value_mut(),
+        ))
+    }
+}
+
+impl<'a, K, V> IntoIterator for &'a mut SkipListMap<K, V> {
+    type Item = <Self::IntoIter as Iterator>::Item;
+
+    type IntoIter = IterMut<'a, K, V>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter_mut()
     }
 }
 
