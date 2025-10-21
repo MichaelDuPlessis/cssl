@@ -654,7 +654,7 @@ where
             self.len += 1;
             let mut new_node = Node::new(key, value);
             if let Some(link) = self.data_list {
-                new_node.append(link);
+                new_node.next = Some(link);
             }
             self.data_list = new_node.into();
             None
@@ -890,5 +890,253 @@ mod tests {
         assert_eq!(Some(&0), map.get(&0));
         assert_eq!(Some(0), map.remove(&0));
         assert_eq!(None, map.get(&0));
+    }
+
+    #[test]
+    fn empty_map_operations() {
+        let mut map = SkipListMap::<i32, i32>::default();
+
+        // Operations on empty map
+        assert_eq!(map.len(), 0);
+        assert_eq!(map.get(&1), None);
+        assert_eq!(map.remove(&1), None);
+
+        // Iterator on empty map
+        assert_eq!(map.iter().count(), 0);
+        assert_eq!(map.iter_mut().count(), 0);
+    }
+
+    #[test]
+    fn single_element_operations() {
+        let mut map = SkipListMap::default();
+
+        // Insert single element
+        assert_eq!(map.insert(42, "answer"), None);
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get(&42), Some(&"answer"));
+
+        // Replace single element
+        assert_eq!(map.insert(42, "new_answer"), Some("answer"));
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get(&42), Some(&"new_answer"));
+
+        // Remove single element
+        assert_eq!(map.remove(&42), Some("new_answer"));
+        assert_eq!(map.len(), 0);
+        assert_eq!(map.get(&42), None);
+
+        // Remove from empty map after removal
+        assert_eq!(map.remove(&42), None);
+    }
+
+    #[test]
+    fn head_operations() {
+        let mut map = SkipListMap::default();
+
+        // Insert elements in ascending order
+        for i in 0..5 {
+            map.insert(i, i * 10);
+        }
+
+        // Remove head element
+        assert_eq!(map.remove(&0), Some(0));
+        assert_eq!(map.get(&0), None);
+        assert_eq!(map.get(&1), Some(&10));
+
+        // Insert new head
+        assert_eq!(map.insert(-1, -10), None);
+        assert_eq!(map.get(&-1), Some(&-10));
+
+        // Remove new head
+        assert_eq!(map.remove(&-1), Some(-10));
+        assert_eq!(map.get(&1), Some(&10));
+    }
+
+    #[test]
+    fn tail_operations() {
+        let mut map = SkipListMap::default();
+
+        for i in 0..5 {
+            map.insert(i, i * 10);
+        }
+
+        // Remove tail element
+        assert_eq!(map.remove(&4), Some(40));
+        assert_eq!(map.get(&4), None);
+        assert_eq!(map.get(&3), Some(&30));
+
+        // Insert new tail
+        assert_eq!(map.insert(10, 100), None);
+        assert_eq!(map.get(&10), Some(&100));
+    }
+
+    #[test]
+    fn duplicate_keys() {
+        let mut map = SkipListMap::default();
+
+        // Insert same key multiple times
+        assert_eq!(map.insert(1, "first"), None);
+        assert_eq!(map.insert(1, "second"), Some("first"));
+        assert_eq!(map.insert(1, "third"), Some("second"));
+
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get(&1), Some(&"third"));
+
+        // Remove should return latest value
+        assert_eq!(map.remove(&1), Some("third"));
+        assert_eq!(map.len(), 0);
+    }
+
+    #[test]
+    fn reverse_order_insertion() {
+        let mut map = SkipListMap::default();
+
+        // Insert in reverse order
+        for i in (0..10).rev() {
+            map.insert(i, i * 2);
+        }
+
+        // Verify order is maintained
+        let collected: Vec<_> = map.iter().collect();
+        for (i, (k, v)) in collected.iter().enumerate() {
+            assert_eq!(**k, i);
+            assert_eq!(**v, i * 2);
+        }
+    }
+
+    #[test]
+    fn random_order_operations() {
+        let mut map = SkipListMap::default();
+        let keys = [5, 2, 8, 1, 9, 3, 7, 4, 6];
+
+        // Insert in random order
+        for &key in &keys {
+            println!("Inserting key: {key}");
+            map.insert(key, key * 10);
+            assert_eq!(map.get(&5), Some(&50));
+        }
+
+        assert_eq!(map.len(), 9);
+        assert_eq!(map.get(&5), Some(&50));
+
+        // Verify sorted iteration
+        let collected: Vec<_> = map.iter().map(|(&k, &v)| (k, v)).collect();
+        let expected: Vec<_> = (1..=9).map(|i| (i, i * 10)).collect();
+        assert_eq!(collected, expected);
+
+        // Remove in different order
+        assert_eq!(map.remove(&5), Some(50));
+        assert_eq!(map.remove(&1), Some(10));
+        assert_eq!(map.remove(&9), Some(90));
+
+        assert_eq!(map.len(), 6);
+    }
+
+    #[test]
+    fn fast_lanes_with_removals() {
+        let mut map = SkipListMap::default();
+
+        // Insert many elements
+        for i in 0..20 {
+            map.insert(i, i);
+        }
+
+        map.build_fast_lanes();
+
+        // Remove elements from different positions
+        assert_eq!(map.remove(&0), Some(0)); // head
+        assert_eq!(map.remove(&19), Some(19)); // tail
+        assert_eq!(map.remove(&10), Some(10)); // middle
+
+        // Verify remaining elements
+        assert_eq!(map.len(), 17);
+        assert_eq!(map.get(&0), None);
+        assert_eq!(map.get(&19), None);
+        assert_eq!(map.get(&10), None);
+        assert_eq!(map.get(&5), Some(&5));
+        assert_eq!(map.get(&15), Some(&15));
+    }
+
+    #[test]
+    fn iterator_consistency() {
+        let mut map = SkipListMap::default();
+
+        for i in [3, 1, 4, 1, 5, 9, 2, 6] {
+            map.insert(i, i * i);
+        }
+
+        // Immutable iterator
+        let keys: Vec<_> = map.iter().map(|(&k, _)| k).collect();
+        let values: Vec<_> = map.iter().map(|(_, &v)| v).collect();
+
+        // Should be sorted by key
+        assert_eq!(keys, vec![1, 2, 3, 4, 5, 6, 9]);
+        assert_eq!(values, vec![1, 4, 9, 16, 25, 36, 81]);
+
+        // Mutable iterator
+        for (_, v) in map.iter_mut() {
+            *v += 1;
+        }
+
+        let new_values: Vec<_> = map.iter().map(|(_, &v)| v).collect();
+        assert_eq!(new_values, vec![2, 5, 10, 17, 26, 37, 82]);
+    }
+
+    #[test]
+    fn large_dataset() {
+        let mut map = SkipListMap::default();
+        const SIZE: usize = 1000;
+
+        // Insert large dataset
+        for i in 0..SIZE {
+            map.insert(i, i * 3);
+        }
+
+        map.build_fast_lanes();
+
+        // Random access
+        assert_eq!(map.get(&500), Some(&1500));
+        assert_eq!(map.get(&0), Some(&0));
+        assert_eq!(map.get(&999), Some(&2997));
+        assert_eq!(map.get(&1000), None);
+
+        // Remove every 10th element
+        for i in (0..SIZE).step_by(10) {
+            assert_eq!(map.remove(&i), Some(i * 3));
+        }
+
+        assert_eq!(map.len(), SIZE - SIZE / 10);
+
+        // Verify removed elements are gone
+        for i in (0..SIZE).step_by(10) {
+            assert_eq!(map.get(&i), None);
+        }
+
+        // Verify remaining elements
+        for i in 1..SIZE {
+            if i % 10 != 0 {
+                assert_eq!(map.get(&i), Some(&(i * 3)));
+            }
+        }
+    }
+
+    #[test]
+    fn boundary_value_tests() {
+        let mut map = SkipListMap::default();
+
+        // Test with extreme values
+        map.insert(i32::MIN, "min");
+        map.insert(i32::MAX, "max");
+        map.insert(0, "zero");
+        map.insert(-1, "neg_one");
+        map.insert(1, "one");
+
+        assert_eq!(map.get(&i32::MIN), Some(&"min"));
+        assert_eq!(map.get(&i32::MAX), Some(&"max"));
+        assert_eq!(map.get(&0), Some(&"zero"));
+
+        // Verify order
+        let keys: Vec<_> = map.iter().map(|(&k, _)| k).collect();
+        assert_eq!(keys, vec![i32::MIN, -1, 0, 1, i32::MAX]);
     }
 }
