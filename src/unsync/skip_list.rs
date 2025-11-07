@@ -264,16 +264,18 @@ impl<'a, K, V> Lane<'a, K, V> {
         Q: Ord + ?Sized,
         K: Ord + Borrow<Q>,
     {
-        // TODO: Change to something like binary search since this is sorted
-        let index = self
-            .lane
-            .iter()
-            .skip(prev_index * p.pow(level as u32 + 1) as usize)
-            .map(|link| unsafe { link.as_ref() })
-            .take_while(|&node| key >= node.key().borrow())
-            .count();
-
-        index.checked_sub(1)
+        let skip_count = prev_index * p.pow(level as u32 + 1) as usize;
+        let search_slice = &self.lane[skip_count..];
+        
+        let result = search_slice.binary_search_by(|link| {
+            let node = unsafe { link.as_ref() };
+            node.key().borrow().cmp(key)
+        });
+        
+        match result {
+            Ok(exact_index) => Some(exact_index),
+            Err(insert_index) => insert_index.checked_sub(1),
+        }
     }
 
     // TODO: Maybe implement index and have a get_unchecked
