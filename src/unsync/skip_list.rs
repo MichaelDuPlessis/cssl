@@ -167,15 +167,15 @@ impl<K, V> Node<K, V> {
     }
 }
 
-impl<K, V> From<Node<K, V>> for Option<Link<K, V>> {
-    fn from(value: Node<K, V>) -> Self {
-        Some(unsafe { NonNull::new_unchecked(Box::into_raw(Box::new(value))) })
-    }
-}
-
 impl<K, V> From<Node<K, V>> for Link<K, V> {
     fn from(value: Node<K, V>) -> Self {
         unsafe { NonNull::new_unchecked(Box::into_raw(Box::new(value))) }
+    }
+}
+
+impl<K, V> From<Node<K, V>> for Option<Link<K, V>> {
+    fn from(value: Node<K, V>) -> Self {
+        Some(value.into())
     }
 }
 
@@ -266,12 +266,12 @@ impl<'a, K, V> Lane<'a, K, V> {
     {
         let skip_count = prev_index * p.pow(level as u32 + 1) as usize;
         let search_slice = &self.lane[skip_count..];
-        
+
         let result = search_slice.binary_search_by(|link| {
             let node = unsafe { link.as_ref() };
             node.key().borrow().cmp(key)
         });
-        
+
         match result {
             Ok(exact_index) => Some(exact_index),
             Err(insert_index) => insert_index.checked_sub(1),
@@ -335,8 +335,6 @@ impl<K, V> FastLanes<K, V> {
         K: Borrow<Q> + Ord,
         Q: Ord + ?Sized,
     {
-        let total_elements = self.num_elements;
-
         // find element in lowest lane
         let lane = self.lane(0, levels, p);
         let index = lane.find(key, 0, p, 0)?;
@@ -488,18 +486,20 @@ impl<K, V> SkipListMap<K, V> {
             .map(|level| lane_start(level, levels, self.p, self.len()))
             .collect();
 
-        if let Some(link) = self.data_list {
-            let node = unsafe { link.as_ref() };
+        let mut current = self.data_list;
+        let mut i = 0;
 
-            for (i, node) in node.iter().enumerate() {
-                for level in 1..=levels {
-                    let p = self.p.pow(level as u32) as usize;
-                    if i % p == 0 {
-                        let index = i / p + offsets[level as usize - 1];
-                        lanes[index] = node.into();
-                    }
+        while let Some(link) = current {
+            for level in 1..=levels {
+                let p = self.p.pow(level as u32) as usize;
+                if i % p == 0 {
+                    let index = i / p + offsets[level as usize - 1];
+                    lanes[index] = link;
                 }
             }
+
+            i += 1;
+            current = unsafe { link.as_ref() }.next();
         }
 
         self.fast_lanes = FastLanes {
@@ -511,15 +511,8 @@ impl<K, V> SkipListMap<K, V> {
 
     /// Safely remove a node and extract its value
     unsafe fn remove_node(node_ptr: Link<K, V>) -> V {
-        let raw_ptr = node_ptr.as_ptr();
-        unsafe {
-            let node_moved: Node<K, V> = std::ptr::read(raw_ptr);
-            let mut node_moved = std::mem::ManuallyDrop::new(node_moved);
-            let val = std::ptr::read(&mut node_moved.item.value);
-            let layout = std::alloc::Layout::new::<Node<K, V>>();
-            std::alloc::dealloc(raw_ptr as *mut u8, layout);
-            val
-        }
+        let boxed_node = unsafe { Box::from_raw(node_ptr.as_ptr()) };
+        boxed_node.item.value
     }
 
     /// Create an immutable iterator.
@@ -583,7 +576,8 @@ where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        self.find_start_node_impl(key).map(|link| unsafe { link.as_ref() })
+        self.find_start_node_impl(key)
+            .map(|link| unsafe { link.as_ref() })
     }
 
     /// Find the starting mutable node for a key search using fast lanes or the node just before the searched node if it exists
@@ -592,7 +586,8 @@ where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        self.find_start_node_impl(key).map(|mut link| unsafe { link.as_mut() })
+        self.find_start_node_impl(key)
+            .map(|mut link| unsafe { link.as_mut() })
     }
 
     /// Retrieves an item from the `SkipListMap`.
@@ -660,32 +655,39 @@ where
     {
         let levels = self.levels();
         let prev_link = self.fast_lanes.remove(key, levels, self.p);
-        let mut start = prev_link.unwrap_or(self.data_list?);
 
-        let head = unsafe { start.as_ref() };
+        let mut current = if let Some(prev) = prev_link {
+            prev
+        } else {
+            // No previous link means we start from head
+            let head_link = self.data_list?;
+            let head = unsafe { head_link.as_ref() };
 
-        // this means the node to remove is the head since there is no previous link
-        if prev_link.is_none() && head.key_matches(key) {
-            let node_ptr: Link<K, V> = head.into();
-            self.data_list = head.next();
-            self.len -= 1;
-            return Some(unsafe { Self::remove_node(node_ptr) });
-        }
-
-        let mut previous = start;
-        for node_ref in unsafe { start.as_mut() }.iter_mut().skip(1) {
-            if node_ref.key_matches(key) {
-                let node_ptr: Link<K, V> = node_ref.into();
-                unsafe { previous.as_mut().next = node_ref.next };
+            // Check if head is the node to remove
+            if head.key_matches(key) {
+                self.data_list = head.next();
                 self.len -= 1;
-                return Some(unsafe { Self::remove_node(node_ptr) });
+                return Some(unsafe { Self::remove_node(head_link) });
             }
 
-            if node_ref.key().borrow() > key {
+            head_link
+        };
+
+        // Search for the key starting from current node's next
+        while let Some(next_link) = unsafe { current.as_ref() }.next() {
+            let next_node = unsafe { next_link.as_ref() };
+
+            if next_node.key_matches(key) {
+                unsafe { current.as_mut() }.next = next_node.next();
+                self.len -= 1;
+                return Some(unsafe { Self::remove_node(next_link) });
+            }
+
+            if next_node.key().borrow() > key {
                 break;
             }
 
-            previous = node_ref.into();
+            current = next_link;
         }
 
         None
@@ -700,12 +702,9 @@ impl<K, V> Default for SkipListMap<K, V> {
 
 impl<K, V> Drop for SkipListMap<K, V> {
     fn drop(&mut self) {
-        let mut current = self.data_list;
-        while let Some(cur) = current {
-            unsafe {
-                let node = Box::from_raw(cur.as_ptr());
-                current = node.next;
-            }
+        while let Some(current) = self.data_list {
+            let node = unsafe { Box::from_raw(current.as_ptr()) };
+            self.data_list = node.next;
         }
     }
 }
@@ -757,10 +756,8 @@ impl<'a, K, V> Iterator for IterMut<'a, K, V> {
         // Advance the iterator
         self.current = (unsafe { &*node }).next;
 
-        Some((
-            (unsafe { &*node }).key(),
-            (unsafe { &mut *node }).value_mut(),
-        ))
+        let node_mut = unsafe { &mut *node };
+        Some((&node_mut.item.key, &mut node_mut.item.value))
     }
 }
 
