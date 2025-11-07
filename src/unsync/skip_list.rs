@@ -295,6 +295,8 @@ struct FastLanes<K, V> {
     levels: u8,
     /// The fast lanes
     lanes: Vec<Link<K, V>>,
+    /// The number of elements when the fast lane was built
+    num_elements: usize,
 }
 
 impl<K, V> FastLanes<K, V> {
@@ -303,6 +305,7 @@ impl<K, V> FastLanes<K, V> {
         Self {
             levels,
             lanes: Vec::new(),
+            num_elements: 0,
         }
     }
 
@@ -334,16 +337,21 @@ impl<K, V> FastLanes<K, V> {
 
         // 2. find the start of the level
         let lane_start = self.lane_start(level, levels, p, total_elements);
+        // println!(
+        //     "Level: {level}\tlevels: {levels}\tp: {p}\ttotal_elements: {total_elements}\tnum_elements: {num_elements}\tLane start: {lane_start}"
+        // );
 
         Lane::new(&self.lanes[lane_start..lane_start + num_elements])
     }
 
     /// Remove the specified key from all lanes and returns a link to the `Node` just before the remove key.
-    fn remove<Q>(&mut self, key: &Q, levels: u8, p: u8, total_elements: usize) -> Option<Link<K, V>>
+    fn remove<Q>(&mut self, key: &Q, levels: u8, p: u8) -> Option<Link<K, V>>
     where
         K: Borrow<Q> + Ord,
         Q: Ord + ?Sized,
     {
+        let total_elements = self.num_elements;
+
         // find element in lowest lane
         let lane = self.lane(0, levels, p, total_elements);
         let index = lane.find(key, 0, p, 0)?;
@@ -351,14 +359,11 @@ impl<K, V> FastLanes<K, V> {
         // if the link we found is not the one we are looking for it means that the link is not in the fast lanes
         // so just return closest element to the one to be removed
         let link = *unsafe { lane.inner().get_unchecked(index) };
+
+        // if it doesn't match it means that the key is not in the fast lanes and we can just return this link
         if !unsafe { link.as_ref().key_matches(key) } {
             return Some(link);
         }
-
-        // if lane.len() == 1 && total_elements == 1 {
-        //     self.lanes.clear();
-        //     return None;
-        // }
 
         // Update level 0
         let lane_len = lane.len();
@@ -376,29 +381,33 @@ impl<K, V> FastLanes<K, V> {
         // Update higher levels
         for level in 1..levels {
             let lane = self.lane(level, levels, p, total_elements);
-            // TODO: I should know the previous index to look from
+            // TODO: I should know the previous index to start looking from
             if let Some(level_index) = lane.find(key, level, p, 0) {
-                let level_link = unsafe { lane.inner().get_unchecked(level_index) };
-                if unsafe { level_link.as_ref().key_matches(key) } {
-                    // if we found the link
-                    let level_abs_index =
-                        self.lane_start(level, levels, p, total_elements) + level_index;
-                    let level_lane_len = lane.len();
+                let link = unsafe { lane.inner().get_unchecked(level_index) };
 
-                    if level_lane_len == 1 {
+                if unsafe { link.as_ref().key_matches(key) } {
+                    // if we found the link
+                    let abs_index = self.lane_start(level, levels, p, total_elements) + level_index;
+                    let lane_len = lane.len();
+
+                    if lane_len == 1 {
                         // Use element from lower lane
                         let lower_start = self.lane_start(level - 1, levels, p, total_elements);
-                        self.lanes[level_abs_index] = self.lanes[lower_start];
-                    } else if level_index < level_lane_len - 1 {
-                        self.lanes[level_abs_index] = self.lanes[level_abs_index + 1];
+                        self.lanes[abs_index] = self.lanes[lower_start];
+                    } else if level_index < lane_len - 1 {
+                        self.lanes[abs_index] = self.lanes[abs_index + 1];
                     } else {
-                        self.lanes[level_abs_index] = self.lanes[level_abs_index - 1];
+                        self.lanes[abs_index] = self.lanes[abs_index - 1];
                     }
                 } else {
                     // if it was not found on this level it cannot be on higher levels since lower levels contain
                     // all the values on higher levels
                     break;
                 }
+            } else {
+                // if it was not found on this level it cannot be on higher levels since lower levels contain
+                // all the values on higher levels
+                break;
             }
         }
 
@@ -410,7 +419,6 @@ impl<K, V> FastLanes<K, V> {
     }
 
     /// The number of fast lanes
-    // TODO: Maybe change to a smaller size like u8 or u32
     fn num_lanes(&self) -> u8 {
         self.levels
     }
@@ -511,7 +519,11 @@ impl<K, V> SkipListMap<K, V> {
             }
         }
 
-        self.fast_lanes = FastLanes { levels, lanes };
+        self.fast_lanes = FastLanes {
+            levels,
+            lanes,
+            num_elements: self.len(),
+        };
     }
 
     /// Safely remove a node and extract its value
@@ -678,7 +690,7 @@ where
         Q: Ord + ?Sized,
     {
         let levels = self.levels();
-        let prev_link = self.fast_lanes.remove(key, levels, self.p, self.len());
+        let prev_link = self.fast_lanes.remove(key, levels, self.p);
         let mut start = prev_link.unwrap_or(self.data_list?);
 
         let head = unsafe { start.as_ref() };
@@ -1114,7 +1126,6 @@ mod tests {
         for i in (0..SIZE).step_by(10) {
             assert_eq!(map.remove(&i), Some(i * 3));
         }
-
         assert_eq!(map.len(), SIZE - SIZE / 10);
 
         // Verify removed elements are gone
