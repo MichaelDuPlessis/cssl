@@ -325,10 +325,12 @@ impl<K, V> FastLanes<K, V> {
     }
 
     /// Retrieve a reference to the fast lane located on the nth level.
-    fn lane(&self, level: u8, levels: u8, p: u8, total_elements: usize) -> Lane<'_, K, V> {
+    fn lane(&self, level: u8, levels: u8, p: u8) -> Lane<'_, K, V> {
         if self.lanes.is_empty() {
             return Lane::new(&[]);
         }
+
+        let total_elements = self.num_elements;
 
         // if it is the highest level we start at
         // Calculating the beginning and end of the level
@@ -337,9 +339,6 @@ impl<K, V> FastLanes<K, V> {
 
         // 2. find the start of the level
         let lane_start = self.lane_start(level, levels, p, total_elements);
-        // println!(
-        //     "Level: {level}\tlevels: {levels}\tp: {p}\ttotal_elements: {total_elements}\tnum_elements: {num_elements}\tLane start: {lane_start}"
-        // );
 
         Lane::new(&self.lanes[lane_start..lane_start + num_elements])
     }
@@ -353,7 +352,7 @@ impl<K, V> FastLanes<K, V> {
         let total_elements = self.num_elements;
 
         // find element in lowest lane
-        let lane = self.lane(0, levels, p, total_elements);
+        let lane = self.lane(0, levels, p);
         let index = lane.find(key, 0, p, 0)?;
 
         // if the link we found is not the one we are looking for it means that the link is not in the fast lanes
@@ -380,7 +379,7 @@ impl<K, V> FastLanes<K, V> {
 
         // Update higher levels
         for level in 1..levels {
-            let lane = self.lane(level, levels, p, total_elements);
+            let lane = self.lane(level, levels, p);
             // TODO: I should know the previous index to start looking from
             if let Some(level_index) = lane.find(key, level, p, 0) {
                 let link = unsafe { lane.inner().get_unchecked(level_index) };
@@ -572,7 +571,7 @@ where
         // Search through fast lanes from highest to lowest level
         let levels = self.levels();
         for level in (1..levels).rev() {
-            let lane = self.fast_lanes.lane(level, levels, self.p, self.len());
+            let lane = self.fast_lanes.lane(level, levels, self.p);
             if let Some(possible_index) = lane.find(key, level, self.p, index) {
                 index = possible_index;
                 let node = unsafe { lane.inner().get_unchecked(index).as_ref() };
@@ -583,7 +582,7 @@ where
         }
 
         // Search level 0
-        let lane = self.fast_lanes.lane(0, levels, self.p, self.len());
+        let lane = self.fast_lanes.lane(0, levels, self.p);
         if let Some(index) = lane.find(key, 0, self.p, index) {
             let node = *unsafe { lane.inner().get_unchecked(index) };
             Some(unsafe { node.as_ref() })
@@ -603,7 +602,7 @@ where
         // Search through fast lanes from highest to lowest level
         let levels = self.levels();
         for level in (1..levels).rev() {
-            let lane = self.fast_lanes.lane(level, levels, self.p, self.len());
+            let lane = self.fast_lanes.lane(level, levels, self.p);
             if let Some(possible_index) = lane.find(key, level, self.p, index) {
                 index = possible_index;
                 let mut node = *unsafe { lane.inner().get_unchecked(index) };
@@ -615,7 +614,7 @@ where
         }
 
         // Search level 0
-        let lane = self.fast_lanes.lane(0, levels, self.p, self.len());
+        let lane = self.fast_lanes.lane(0, levels, self.p);
         if let Some(index) = lane.find(key, 0, self.p, index) {
             let mut node = *unsafe { lane.inner().get_unchecked(index) };
             Some(unsafe { node.as_mut() })
@@ -1033,7 +1032,6 @@ mod tests {
 
         // Insert in random order
         for &key in &keys {
-            println!("Inserting key: {key}");
             map.insert(key, key * 10);
             assert_eq!(map.get(&5), Some(&50));
         }
@@ -1126,6 +1124,7 @@ mod tests {
         for i in (0..SIZE).step_by(10) {
             assert_eq!(map.remove(&i), Some(i * 3));
         }
+
         assert_eq!(map.len(), SIZE - SIZE / 10);
 
         // Verify removed elements are gone
