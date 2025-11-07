@@ -543,7 +543,7 @@ where
 {
     /// Find the starting node for a key search using fast lanes or the node just before the searched for node
     /// if it exists
-    fn find_start_node<Q>(&self, key: &Q) -> Option<&Node<K, V>>
+    fn find_start_node_impl<Q>(&self, key: &Q) -> Option<Link<K, V>>
     where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
@@ -556,9 +556,10 @@ where
             let lane = self.fast_lanes.lane(level, levels, self.p);
             if let Some(possible_index) = lane.find(key, level, self.p, index) {
                 index = possible_index;
-                let node = unsafe { lane.inner().get_unchecked(index).as_ref() };
+                let node_link = *unsafe { lane.inner().get_unchecked(index) };
+                let node = unsafe { node_link.as_ref() };
                 if node.key_matches(key) {
-                    return Some(node);
+                    return Some(node_link);
                 }
             }
         }
@@ -566,11 +567,21 @@ where
         // Search level 0
         let lane = self.fast_lanes.lane(0, levels, self.p);
         if let Some(index) = lane.find(key, 0, self.p, index) {
-            let node = *unsafe { lane.inner().get_unchecked(index) };
-            Some(unsafe { node.as_ref() })
+            let node_link = *unsafe { lane.inner().get_unchecked(index) };
+            Some(node_link)
         } else {
-            unsafe { self.data_list?.as_ref() }.into()
+            self.data_list
         }
+    }
+
+    /// Find the starting node for a key search using fast lanes or the node just before the searched for node
+    /// if it exists
+    fn find_start_node<Q>(&self, key: &Q) -> Option<&Node<K, V>>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
+        self.find_start_node_impl(key).map(|link| unsafe { link.as_ref() })
     }
 
     /// Find the starting mutable node for a key search using fast lanes or the node just before the searched node if it exists
@@ -579,30 +590,7 @@ where
         K: Borrow<Q>,
         Q: Ord + ?Sized,
     {
-        let mut index = 0;
-
-        // Search through fast lanes from highest to lowest level
-        let levels = self.levels();
-        for level in (1..levels).rev() {
-            let lane = self.fast_lanes.lane(level, levels, self.p);
-            if let Some(possible_index) = lane.find(key, level, self.p, index) {
-                index = possible_index;
-                let mut node = *unsafe { lane.inner().get_unchecked(index) };
-                let node = unsafe { node.as_mut() };
-                if node.key_matches(key) {
-                    return Some(node);
-                }
-            }
-        }
-
-        // Search level 0
-        let lane = self.fast_lanes.lane(0, levels, self.p);
-        if let Some(index) = lane.find(key, 0, self.p, index) {
-            let mut node = *unsafe { lane.inner().get_unchecked(index) };
-            Some(unsafe { node.as_mut() })
-        } else {
-            unsafe { self.data_list?.as_mut() }.into()
-        }
+        self.find_start_node_impl(key).map(|mut link| unsafe { link.as_mut() })
     }
 
     /// Retrieves an item from the `SkipListMap`.
