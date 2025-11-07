@@ -479,17 +479,12 @@ impl<K, V> SkipListMap<K, V> {
         // first calculate the needed size for the fast lanes
         // TODO: This can be done better no loops should be needed
         let len = (0..levels).map(|i| lane_len(i, self.p, self.len())).sum();
-        let mut lanes: Vec<Link<K, V>> = Vec::with_capacity(len);
-        // set the len so we can just index and assign anywhere
-        unsafe { lanes.set_len(len) };
+        let mut lanes = vec![NonNull::dangling(); len];
 
-        // calculating lane offsets
-        // TODO: This is essentially a copy of the code from the FastLane struct and should be extracted out
-        let mut offsets = vec![0; levels as usize];
-        for level in 0..levels {
-            let offset = lane_start(level, levels, self.p, self.len());
-            offsets[level as usize] = offset;
-        }
+        // calculating lane offsets using the consolidated method
+        let offsets: Vec<usize> = (0..levels)
+            .map(|level| lane_start(level, levels, self.p, self.len()))
+            .collect();
 
         if let Some(link) = self.data_list {
             let node = unsafe { link.as_ref() };
@@ -633,38 +628,36 @@ where
     /// Insert a key value pair into the `SkipListMap`.
     /// Returns the value previously associated with the key and replaces it with the new one if a previous exists.
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
-        // Check for exact match first
-        let start = if let Some(start_node) = self.find_start_node_mut(&key) {
-            if start_node.key_matches(&key) {
-                return Some(start_node.item_mut().replace(value));
-            }
+        // Handle empty list case
+        if self.data_list.is_none() {
+            let new_node = Node::new(key, value);
+            self.len += 1;
+            self.data_list = new_node.into();
+            return None;
+        }
 
-            start_node
-        } else {
-            let Some(mut start_node) = self.data_list else {
-                let new_node = Node::new(key, value);
-                self.len += 1;
-                self.data_list = new_node.into();
-                return None;
-            };
-            unsafe { start_node.as_mut() }
-        };
+        let start_node = self.find_start_node_mut(&key).unwrap();
 
-        if let Some(node) = start.find_mut(&key) {
+        // Check if start node matches
+        if start_node.key_matches(&key) {
+            return Some(start_node.item_mut().replace(value));
+        }
+
+        // Search for exact match or insertion point
+        if let Some(node) = start_node.find_mut(&key) {
             if node.key_matches(&key) {
-                return Some(node.item_mut().replace(value));
+                Some(node.item_mut().replace(value))
             } else {
                 node.append(Node::new(key, value));
+                self.len += 1;
+                None
             }
-            self.len += 1;
-            None
         } else {
-            self.len += 1;
+            // Insert at head
             let mut new_node = Node::new(key, value);
-            if let Some(link) = self.data_list {
-                new_node.next = Some(link);
-            }
+            new_node.next = self.data_list;
             self.data_list = new_node.into();
+            self.len += 1;
             None
         }
     }
