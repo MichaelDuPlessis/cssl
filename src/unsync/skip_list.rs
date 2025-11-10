@@ -18,6 +18,7 @@ fn lane_len(level: u8, p: u8, total_elements: usize) -> usize {
 }
 
 /// An key: value pair stored in the `SkipListMap`.
+#[derive(Debug)]
 struct Item<K, V> {
     key: K,
     value: V,
@@ -50,19 +51,6 @@ impl<K, V> Item<K, V> {
     }
 }
 
-impl<K, V> Debug for Item<K, V>
-where
-    K: Debug,
-    V: Debug,
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Item")
-            .field("key", &self.key)
-            .field("value", &self.value)
-            .finish()
-    }
-}
-
 type Link<K, V> = NonNull<Node<K, V>>;
 
 /// A `Node` in the underlying linked list.
@@ -83,8 +71,7 @@ impl<K, V> Node<K, V> {
     }
 
     /// Appends a `Node` to self.
-    fn append(&mut self, link: impl Into<Link<K, V>>) {
-        let mut link = link.into();
+    fn append(&mut self, mut link: Link<K, V>) {
         unsafe { link.as_mut() }.next = self.next;
         self.next = Some(link);
     }
@@ -165,17 +152,10 @@ impl<K, V> Node<K, V> {
             _marker: PhantomData,
         }
     }
-}
 
-impl<K, V> From<Node<K, V>> for Link<K, V> {
-    fn from(value: Node<K, V>) -> Self {
-        unsafe { NonNull::new_unchecked(Box::into_raw(Box::new(value))) }
-    }
-}
-
-impl<K, V> From<Node<K, V>> for Option<Link<K, V>> {
-    fn from(value: Node<K, V>) -> Self {
-        Some(value.into())
+    /// Creates a NonNull Node from a Node, this must manually be cleaned up
+    unsafe fn into_link(self) -> Link<K, V> {
+        unsafe { NonNull::new_unchecked(Box::into_raw(Box::new(self))) }
     }
 }
 
@@ -617,7 +597,7 @@ where
         if self.data_list.is_none() {
             let new_node = Node::new(key, value);
             self.len += 1;
-            self.data_list = new_node.into();
+            self.data_list = Some(unsafe { new_node.into_link() });
             return None;
         }
 
@@ -633,7 +613,7 @@ where
             if node.key_matches(&key) {
                 Some(node.item_mut().replace(value))
             } else {
-                node.append(Node::new(key, value));
+                node.append(unsafe { Node::new(key, value).into_link() });
                 self.len += 1;
                 None
             }
@@ -641,7 +621,7 @@ where
             // Insert at head
             let mut new_node = Node::new(key, value);
             new_node.next = self.data_list;
-            self.data_list = new_node.into();
+            self.data_list = Some(unsafe { new_node.into_link() });
             self.len += 1;
             None
         }
