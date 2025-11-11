@@ -496,19 +496,21 @@ impl<K, V> SkipListMap<K, V> {
     }
 
     /// Create an immutable iterator.
-    fn iter(&self) -> Iter<'_, K, V> {
-        Iter {
-            current: self.data_list,
-            _marker: PhantomData,
-        }
+    pub fn iter(&self) -> impl Iterator<Item = (&K, &V)> + '_ {
+        self.data_list
+            .map(|link| unsafe { link.as_ref() }.iter())
+            .into_iter()
+            .flatten()
+            .map(|node| (node.key(), node.value()))
     }
 
     /// Create an mutable iterator.
-    fn iter_mut(&mut self) -> IterMut<'_, K, V> {
-        IterMut {
-            current: self.data_list,
-            _marker: PhantomData,
-        }
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&K, &mut V)> + '_ {
+        self.data_list
+            .map(|mut link| unsafe { link.as_mut() }.iter_mut())
+            .into_iter()
+            .flatten()
+            .map(|node| (&node.item.key, &mut node.item.value))
     }
 }
 
@@ -680,74 +682,30 @@ impl<K, V> Default for SkipListMap<K, V> {
     }
 }
 
+impl<'a, K, V> IntoIterator for &'a SkipListMap<K, V> {
+    type Item = (&'a K, &'a V);
+    type IntoIter = Box<dyn Iterator<Item = Self::Item> + 'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        Box::new(self.iter())
+    }
+}
+
+impl<'a, K, V> IntoIterator for &'a mut SkipListMap<K, V> {
+    type Item = (&'a K, &'a mut V);
+    type IntoIter = Box<dyn Iterator<Item = Self::Item> + 'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        Box::new(self.iter_mut())
+    }
+}
+
 impl<K, V> Drop for SkipListMap<K, V> {
     fn drop(&mut self) {
         while let Some(current) = self.data_list {
             let node = unsafe { Box::from_raw(current.as_ptr()) };
             self.data_list = node.next;
         }
-    }
-}
-
-// TODO: I think this is unnecessary since we can just use Node iter
-/// Immutabale iterator for `SkipListMap`.
-pub struct Iter<'a, K: 'a, V: 'a> {
-    current: Option<Link<K, V>>,
-    _marker: PhantomData<&'a Link<K, V>>,
-}
-
-impl<'a, K, V> Iterator for Iter<'a, K, V> {
-    type Item = (&'a K, &'a V);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let link = self.current?; // copy out the link (Link<T> is Copy)
-        let node = unsafe { link.as_ref() };
-
-        // Advance the iterator
-        self.current = node.next;
-
-        Some((node.key(), node.value()))
-    }
-}
-
-impl<'a, K, V> IntoIterator for &'a SkipListMap<K, V> {
-    type Item = <Self::IntoIter as Iterator>::Item;
-
-    type IntoIter = Iter<'a, K, V>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.iter()
-    }
-}
-
-/// Mutabale iterator for `SkipListMap`.
-pub struct IterMut<'a, K: 'a, V: 'a> {
-    current: Option<Link<K, V>>,
-    _marker: PhantomData<&'a Link<K, V>>,
-}
-
-impl<'a, K, V> Iterator for IterMut<'a, K, V> {
-    type Item = (&'a K, &'a mut V);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let link = self.current?; // copy out the link (Link<T> is Copy)
-        let node = link.as_ptr();
-
-        // Advance the iterator
-        self.current = (unsafe { &*node }).next;
-
-        let node_mut = unsafe { &mut *node };
-        Some((&node_mut.item.key, &mut node_mut.item.value))
-    }
-}
-
-impl<'a, K, V> IntoIterator for &'a mut SkipListMap<K, V> {
-    type Item = <Self::IntoIter as Iterator>::Item;
-
-    type IntoIter = IterMut<'a, K, V>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.iter_mut()
     }
 }
 
